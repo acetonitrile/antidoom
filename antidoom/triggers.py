@@ -70,8 +70,8 @@ class TriggerEngine:
 
         trigger = None
 
-        # "We need to talk" — bad day
-        if doom_mins >= self.config.doom_we_need_to_talk:
+        # "We need to talk" — bad day (only when currently doom scrolling)
+        if doom_mins >= self.config.doom_we_need_to_talk and consec_doom > 0:
             trigger = "we_need_to_talk"
 
         # Extended doom scroll
@@ -105,10 +105,10 @@ class TriggerEngine:
         self._last_nudge_time = datetime.now().timestamp()
         log.info("Cooldown reset (conversation ended)")
 
-    def dismiss_nudge(self):
-        """Called when user dismisses a doom-related nudge without engaging."""
+    def dismiss_nudge(self, trigger: str = "nudge"):
+        """Called when user dismisses a doom-related conversation without engaging."""
         self._nudges_dismissed += 1
-        log.info("Nudge dismissed (total dismissed: %d)", self._nudges_dismissed)
+        log.info("%s dismissed without engagement (total dismissed: %d)", trigger, self._nudges_dismissed)
 
     def engaged(self):
         """Called when user engages with a doom-related nudge."""

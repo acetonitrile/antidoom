@@ -20,7 +20,6 @@ log = logging.getLogger(__name__)
 class Activity(Enum):
     PRODUCTIVE = "productive"
     DOOM_SCROLLING = "doom_scrolling"
-    INTENTIONAL_LEISURE = "intentional_leisure"
     AMBIGUOUS = "ambiguous"
 
 
@@ -77,11 +76,12 @@ class WatcherState:
 CLASSIFICATION_PROMPT_BASE = """\
 You are classifying a user's computer screenshot for a productivity buddy app.
 
+Your job is to judge whether the user is doing REAL WORK or not. Be skeptical. If something doesn't look like it's clearly contributing to their work, it's probably not.
+
 Classify the activity into exactly one category:
-- "productive": IDE, writing docs, spreadsheets, focused reading, work communication
-- "doom_scrolling": Social media feeds (Twitter/X, Reddit, TikTok, Instagram, YouTube shorts), news feed scrolling, infinite scroll content. ALSO includes spending time on apps/sites the user has identified as personal distractions, even if watching a specific video or reading a specific post.
-- "intentional_leisure": Watching a specific video, playing a game, or reading a specific article on a platform that is NOT one of the user's known distractions
-- "ambiguous": Could be work or not (e.g. Slack, email, unclear context)
+- "productive": Actively doing work — coding in an IDE, writing docs, spreadsheets, work communication. The activity must be DIRECTLY and OBVIOUSLY related to their current project. Do not assume a technical topic is work-related just because the user is a developer — it must be specifically relevant to what they're building.
+- "doom_scrolling": ANY leisure, entertainment, or distraction browsing. This includes social media, news feeds, YouTube, Reddit, torrent sites, shopping, forums, games, or anything else that is clearly not work. If it's not productive and it's not genuinely ambiguous, it's doom_scrolling.
+- "ambiguous": The activity COULD be work-related but you're not confident. Use this for: reading articles or wikis on topics that are tangentially technical but not clearly part of their project, communication tools that could be work or personal (Slack, email, Discord), or anything where you'd want to ask the user "is this for work?" before judging.
 """
 
 CLASSIFICATION_PROMPT_SUFFIX = """
@@ -96,13 +96,13 @@ def build_classification_prompt(profile: dict | None = None) -> str:
 
     if profile:
         context_lines = []
-        if profile.get("distractions"):
-            context_lines.append(f"This user's known distractions: {profile['distractions']}")
         if profile.get("projects"):
             context_lines.append(f"Currently working on: {profile['projects']}")
+        if profile.get("distractions"):
+            context_lines.append(f"Known distractions (always classify as doom_scrolling): {profile['distractions']}")
         if context_lines:
             parts.append("\nUser context:\n" + "\n".join(context_lines))
-            parts.append("\nIMPORTANT: If the user is on one of their known distraction apps/sites, classify as \"doom_scrolling\" even if they are watching a specific video or reading a specific post. The user has identified these as problematic for them.")
+            parts.append("\nUse the user's project context to judge relevance. If what they're doing has NO clear connection to their current work, classify as \"doom_scrolling\". Browsing entertainment, media, shopping, or anything unrelated to their project is doom_scrolling — you don't need to be told every specific site.")
 
     parts.append(CLASSIFICATION_PROMPT_SUFFIX)
     return "\n".join(parts)

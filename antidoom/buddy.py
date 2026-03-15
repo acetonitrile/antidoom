@@ -52,7 +52,7 @@ Guidelines per conversation type:
 - **nudge**: Short and specific. Reference their goal and what they said they'd be doing. "Hey, weren't you working on X?" One message is often enough — if they acknowledge, signal closing.
 - **extended_nudge**: More direct. They dismissed a previous nudge. "Hey, you've been on [distraction] for a while now. What's going on?"
 - **we_need_to_talk**: Longer conversation. This is a bad day. Ask open-ended questions about what's going on. Stay keep_open until you've actually talked it through.
-- **grind_break**: They've been productive for a long time. Keep it SHORT — one sentence. Affirm their focus, suggest a stretch/water break. Signal closing immediately. Do NOT ask what they're working on — you already know.
+- **grind_break**: They've been productive for a long time. Keep it SHORT — one sentence max. Affirm their focus, suggest a stretch/water break. You MUST signal "closing" immediately — never "keep_open". Do NOT ask questions. Do NOT ask what they're working on — you already know.
 - **user_initiated**: They opened the window themselves. Be available. Follow their lead.
 """
 
@@ -96,6 +96,40 @@ Extract a user profile from this onboarding conversation. Return JSON only, no m
 }
 
 Omit any field where the user didn't provide info (use null).
+"""
+
+
+MEMORY_EXTRACTION_PROMPT = """\
+You just finished a conversation with a user (your cowork buddy). Extract anything worth remembering for future conversations.
+
+IMPORTANT: The current date/time is {current_datetime}. Always use absolute dates in memories, never relative terms like "tomorrow", "yesterday", "later today", "in 12 hours". For example, write "hackathon demo on 2026-03-15" not "hackathon demo tomorrow".
+
+Things worth remembering:
+- Emotional state or mood shifts ("was feeling anxious about deadline", "seemed frustrated with coworker")
+- Commitments or intentions they mentioned ("said they'd take a break after this PR", "wants to go for a walk at 3pm on 2026-03-14")
+- Personal context they shared ("has a meeting at 2pm on 2026-03-14", "didn't sleep well", "excited about new feature")
+- Preferences or patterns you noticed ("responds well to humor", "gets defensive when asked directly about doom scrolling")
+
+Things NOT worth remembering:
+- Anything already in their profile (role, projects, distractions)
+- Their goals (tracked separately)
+- Generic pleasantries or small talk
+
+Also check: should anything in the user's profile be updated based on this conversation? For example, if they mentioned switching projects, or a new distraction pattern.
+
+IMPORTANT for profile_updates: Profile updates are MERGED into the existing profile, not replaced. If updating a field like "distractions", include BOTH the existing value and the new information. For example, if the current distractions field says "YouTube, Twitter" and you learn they also doom scroll Reddit, write "YouTube, Twitter, Reddit (especially tech layoff news)" — don't drop the existing ones.
+
+Current profile:
+{current_profile}
+
+Respond with JSON only, no markdown:
+{{
+  "memories": ["memory 1", "memory 2"],
+  "profile_updates": {{"field": "new value"}} or null
+}}
+
+If there's nothing worth remembering, respond with:
+{{"memories": [], "profile_updates": null}}
 """
 
 
@@ -150,13 +184,24 @@ def _build_context(
         if consec_prod > 4:  # >2 min
             parts.append(f"Been productive for ~{consec_prod * 0.5:.0f} min straight")
 
-    # Recent conversations (summaries)
+    # Buddy memories (learnings from past conversations)
+    memories = memory.get_memories()
+    if memories:
+        # Show most recent 20 memories
+        recent_memories = memories[-20:]
+        parts.append("Things you remember about this user:")
+        for m in recent_memories:
+            parts.append(f"  - {m['text']}")
+
+    # Recent conversations (full messages for cross-conversation context)
     recent = memory.recent_conversations(3)
     if recent:
         parts.append("Recent conversations:")
         for c in recent:
-            first_msg = c.messages[0].content[:100] if c.messages else "(empty)"
-            parts.append(f"  [{c.trigger}] {c.started_at[:16]}: {first_msg}...")
+            parts.append(f"  --- [{c.trigger}] {c.started_at[:16]} ---")
+            for msg in c.messages:
+                role = "Buddy" if msg.role == "assistant" else "User"
+                parts.append(f"  {role}: {msg.content}")
 
     parts.append(f"Conversation trigger: {trigger}")
     parts.append(f"Current time: {datetime.now().strftime('%I:%M %p, %A')}")
@@ -352,6 +397,57 @@ class Buddy:
             log.info("Profile saved: %s", profile)
         except Exception as e:
             log.error("Failed to extract profile: %s", e, exc_info=True)
+
+    def extract_memories(self):
+        """Extract memories from the just-finished conversation. Call after conversation ends."""
+        if not self.current_convo or len(self.current_convo.messages) < 2:
+            log.debug("Skipping memory extraction — conversation too short")
+            return
+
+        transcript = "\n".join(
+            f"{'buddy' if m.role == 'assistant' else 'user'}: {m.content}"
+            for m in self.current_convo.messages
+        )
+
+        current_dt = datetime.now().strftime("%Y-%m-%d %I:%M %p, %A")
+        profile = self.memory.get_profile() or {}
+        profile_str = json.dumps(profile, indent=2) if profile else "(no profile yet)"
+        prompt = MEMORY_EXTRACTION_PROMPT.format(
+            current_datetime=current_dt,
+            current_profile=profile_str,
+        )
+
+        try:
+            resp = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=300,
+                messages=[
+                    {"role": "user", "content": f"{prompt}\n\nConversation ({self.current_convo.trigger}):\n{transcript}"}
+                ],
+            )
+            raw_text = resp.content[0].text.strip()
+            log.debug("Memory extraction raw: %s", raw_text)
+
+            # Strip markdown code fences if present
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3].strip()
+
+            data = json.loads(raw_text)
+
+            memories = data.get("memories", [])
+            if memories:
+                self.memory.add_memories(memories)
+                log.info("Saved %d memories: %s", len(memories), memories)
+
+            profile_updates = data.get("profile_updates")
+            if profile_updates:
+                self.memory.update_profile_fields(profile_updates)
+                log.info("Updated profile: %s", profile_updates)
+
+        except Exception as e:
+            log.error("Memory extraction failed: %s", e, exc_info=True)
 
     def _maybe_extract_goals(self, user_message: str):
         """Simple heuristic: if this is a morning check-in and user stated a goal, save it."""

@@ -213,7 +213,11 @@ class AntidoomApp:
             "nudge", "extended_nudge", "we_need_to_talk",
         ):
             # Only count as dismissed if user never replied
-            self.triggers.dismiss_nudge()
+            self.triggers.dismiss_nudge(self.buddy.current_convo.trigger)
+
+        # Extract memories from the conversation in background
+        import threading
+        threading.Thread(target=self.buddy.extract_memories, daemon=True).start()
 
     def _start_onboarding(self):
         """Start or redo the onboarding conversation."""

@@ -99,6 +99,34 @@ class Memory:
             "daily": [g.text for g in goals if g.scope == "daily"],
         }
 
+    # --- Buddy memories (learnings from conversations) ---
+
+    def get_memories(self) -> list[dict]:
+        """Load buddy memory notes."""
+        path = self.data_dir / "memories.json"
+        if not path.exists():
+            return []
+        return json.loads(path.read_text())
+
+    def add_memories(self, notes: list[str]):
+        """Append new memory notes."""
+        memories = self.get_memories()
+        for note in notes:
+            memories.append({
+                "text": note,
+                "created_at": datetime.now().isoformat(),
+            })
+        path = self.data_dir / "memories.json"
+        path.write_text(json.dumps(memories, indent=2))
+
+    def update_profile_fields(self, updates: dict):
+        """Merge updates into the existing profile."""
+        profile = self.get_profile() or {}
+        for k, v in updates.items():
+            if v is not None:
+                profile[k] = v
+        self.save_profile(profile)
+
     # --- Conversations ---
 
     def save_conversation(self, convo: Conversation):
