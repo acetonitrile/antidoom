@@ -20,8 +20,9 @@ class TriggerConfig:
     # Grind threshold
     grind_threshold: int = 180             # ~90 min of consecutive productive
 
-    # Nudge dismissed cooldown (seconds)
-    nudge_cooldown: int = 600              # 10 min
+    # Nudge cooldown — exponential backoff: halved on each dismiss, min=nudge_cooldown_floor
+    nudge_cooldown: int = 300              # 5 min initial (→ 2.5min → 1.25min → floor)
+    nudge_cooldown_floor: int = 60         # 1 min minimum
 
     # Scheduled check-in times
     morning_checkin: time = time(9, 0)
@@ -62,10 +63,14 @@ class TriggerEngine:
         if consec_prod == 0:
             self._grind_break_fired_at = 0
 
-        # Cooldown check
-        cooldown_remaining = self.config.nudge_cooldown - (now - self._last_nudge_time)
+        # Cooldown check — exponential backoff: halve cooldown on each dismiss, floor at 60s
+        effective_cooldown = self.config.nudge_cooldown
+        for _ in range(self._nudges_dismissed):
+            effective_cooldown = max(self.config.nudge_cooldown_floor, effective_cooldown // 2)
+        cooldown_remaining = effective_cooldown - (now - self._last_nudge_time)
         if cooldown_remaining > 0:
-            log.debug("In cooldown: %.0fs remaining", cooldown_remaining)
+            log.debug("In cooldown: %.0fs remaining (effective=%ds, dismissed=%d)",
+                       cooldown_remaining, effective_cooldown, self._nudges_dismissed)
             return
 
         trigger = None

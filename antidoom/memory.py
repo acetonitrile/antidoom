@@ -119,6 +119,18 @@ class Memory:
         path = self.data_dir / "memories.json"
         path.write_text(json.dumps(memories, indent=2))
 
+    def replace_memories(self, notes: list[str]):
+        """Replace all memories with compacted versions."""
+        memories = []
+        for note in notes:
+            memories.append({
+                "text": note,
+                "created_at": datetime.now().isoformat(),
+                "compacted": True,
+            })
+        path = self.data_dir / "memories.json"
+        path.write_text(json.dumps(memories, indent=2))
+
     def update_profile_fields(self, updates: dict):
         """Merge updates into the existing profile."""
         profile = self.get_profile() or {}

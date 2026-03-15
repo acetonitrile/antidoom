@@ -133,6 +133,37 @@ If there's nothing worth remembering, respond with:
 """
 
 
+MEMORY_COMPACTION_PROMPT = """\
+You are managing a memory store for a cowork buddy app. The memories below were extracted from conversations with a user over time. Many are redundant or overlap.
+
+Compact these {count} memories down to at most {target} entries by:
+- Merging entries about the same topic/event into one richer entry
+- Keeping the most recent/specific version when duplicates exist
+- Preserving emotional context and personal details
+- Using absolute dates (never relative like "tomorrow")
+- Dropping anything that's purely redundant with the user profile below
+- Distilling repeated patterns into observations ("got distracted by X three times this week")
+
+Current user profile:
+{profile}
+
+Current date: {current_date}
+
+Memories to compact (oldest first):
+{memories}
+
+Also: if the memories reveal information that should update the user profile (e.g., new distraction patterns, mood tendencies, updated project status, refined understanding of what they're working on), include profile updates.
+
+Respond with JSON only, no markdown:
+{{
+  "memories": ["memory 1", "memory 2", ...],
+  "profile_updates": {{"field": "new value"}} or null
+}}
+
+Each memory should be a single, information-dense sentence. For profile_updates, MERGE with existing profile values — don't drop existing info, enrich it.
+"""
+
+
 def _build_context(
     memory: Memory,
     watcher_state: WatcherState | None,
@@ -187,10 +218,8 @@ def _build_context(
     # Buddy memories (learnings from past conversations)
     memories = memory.get_memories()
     if memories:
-        # Show most recent 20 memories
-        recent_memories = memories[-20:]
         parts.append("Things you remember about this user:")
-        for m in recent_memories:
+        for m in memories:
             parts.append(f"  - {m['text']}")
 
     # Recent conversations (full messages for cross-conversation context)
@@ -400,13 +429,17 @@ class Buddy:
 
     def extract_memories(self):
         """Extract memories from the just-finished conversation. Call after conversation ends."""
-        if not self.current_convo or len(self.current_convo.messages) < 2:
+        self.extract_memories_from(self.current_convo)
+
+    def extract_memories_from(self, convo: 'Conversation | None'):
+        """Extract memories from a specific conversation. Thread-safe — doesn't read self.current_convo."""
+        if not convo or len(convo.messages) < 2:
             log.debug("Skipping memory extraction — conversation too short")
             return
 
         transcript = "\n".join(
             f"{'buddy' if m.role == 'assistant' else 'user'}: {m.content}"
-            for m in self.current_convo.messages
+            for m in convo.messages
         )
 
         current_dt = datetime.now().strftime("%Y-%m-%d %I:%M %p, %A")
@@ -422,7 +455,7 @@ class Buddy:
                 model="claude-sonnet-4-6",
                 max_tokens=300,
                 messages=[
-                    {"role": "user", "content": f"{prompt}\n\nConversation ({self.current_convo.trigger}):\n{transcript}"}
+                    {"role": "user", "content": f"{prompt}\n\nConversation ({convo.trigger}):\n{transcript}"}
                 ],
             )
             raw_text = resp.content[0].text.strip()
@@ -448,6 +481,74 @@ class Buddy:
 
         except Exception as e:
             log.error("Memory extraction failed: %s", e, exc_info=True)
+
+        # Check if memories need compaction
+        self.compact_memories()
+
+    def compact_memories(self):
+        """Compact memories when they exceed threshold."""
+        COMPACT_THRESHOLD = 30
+        COMPACT_TARGET = 15
+
+        memories = self.memory.get_memories()
+        if len(memories) <= COMPACT_THRESHOLD:
+            return
+
+        log.info("Memory compaction: %d entries exceed threshold %d", len(memories), COMPACT_THRESHOLD)
+
+        profile = self.memory.get_profile() or {}
+        profile_str = json.dumps(profile, indent=2) if profile else "(no profile)"
+        memories_str = "\n".join(f"- [{m.get('created_at', '?')[:10]}] {m['text']}" for m in memories)
+
+        prompt = MEMORY_COMPACTION_PROMPT.format(
+            count=len(memories),
+            target=COMPACT_TARGET,
+            profile=profile_str,
+            current_date=datetime.now().strftime("%Y-%m-%d"),
+            memories=memories_str,
+        )
+
+        try:
+            resp = self.client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=1500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw_text = resp.content[0].text.strip()
+            log.debug("Memory compaction raw: %s", raw_text)
+
+            # Strip markdown code fences if present
+            if raw_text.startswith("```"):
+                raw_text = raw_text.split("\n", 1)[1] if "\n" in raw_text else raw_text[3:]
+                if raw_text.endswith("```"):
+                    raw_text = raw_text[:-3].strip()
+
+            data = json.loads(raw_text)
+
+            # Handle both formats: plain array or {memories, profile_updates}
+            if isinstance(data, list):
+                compacted = data
+                profile_updates = None
+            elif isinstance(data, dict):
+                compacted = data.get("memories", [])
+                profile_updates = data.get("profile_updates")
+            else:
+                log.warning("Compaction returned invalid data type, skipping")
+                return
+
+            if not compacted:
+                log.warning("Compaction returned empty memories, skipping")
+                return
+
+            self.memory.replace_memories(compacted)
+            log.info("Compacted %d memories down to %d", len(memories), len(compacted))
+
+            if profile_updates:
+                self.memory.update_profile_fields(profile_updates)
+                log.info("Profile updated during compaction: %s", profile_updates)
+
+        except Exception as e:
+            log.error("Memory compaction failed: %s", e, exc_info=True)
 
     def _maybe_extract_goals(self, user_message: str):
         """Simple heuristic: if this is a morning check-in and user stated a goal, save it."""

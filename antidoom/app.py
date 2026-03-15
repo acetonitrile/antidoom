@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu
 from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QFont
 from PyQt6.QtCore import QTimer, Qt
 
-from .watcher import Watcher
+from .watcher import Watcher, Activity
 from .buddy import Buddy, SIGNAL_CLOSING, SIGNAL_MINIMIZE
 from .memory import Memory
 from .triggers import TriggerEngine, TriggerConfig
@@ -18,6 +18,13 @@ from .chat_window import ChatWindow
 log = logging.getLogger(__name__)
 
 LOG_DIR = Path(__file__).resolve().parent.parent / ".antidoom"
+
+# Emoji per activity type for the status label
+_ACTIVITY_EMOJI = {
+    Activity.PRODUCTIVE: "\U0001f7e2",     # green circle
+    Activity.DOOM_SCROLLING: "\U0001f534",  # red circle
+    Activity.AMBIGUOUS: "\U0001f7e1",       # yellow circle
+}
 
 
 def _setup_logging():
@@ -89,7 +96,8 @@ class AntidoomApp:
                 doom_extended_threshold=4, # 4 snapshots (~40s vs ~5min)
                 doom_we_need_to_talk=5.0, # 5 min (vs 3 hours)
                 grind_threshold=6,        # ~1 min (vs 90 min)
-                nudge_cooldown=30,        # 30s (vs 10 min)
+                nudge_cooldown=30,        # 30s initial (→ 15s → 8s → floor)
+                nudge_cooldown_floor=5,   # 5s floor in debug
             )
         else:
             watcher_interval = 30
@@ -118,10 +126,31 @@ class AntidoomApp:
         # Wire signal for showing conversation on main thread (safe from any thread)
         self.window.signal_bridge.show_conversation.connect(self._show_conversation)
 
+        # Wire up activity status updates
+        self.watcher.on_snapshot(self._on_snapshot_for_status)
+        self.window.signal_bridge.update_activity.connect(self._update_tray_tooltip)
+        self._pending_tray_tooltip = "Antidoom Buddy"
+
         # Triggers fire into the window via signal bridge — but gate on active state
         self.triggers.on_trigger(self._on_trigger_fired)
 
         self._setup_tray()
+
+    def _on_snapshot_for_status(self, snapshot):
+        """Update the status label and tray tooltip with latest classification."""
+        emoji = _ACTIVITY_EMOJI.get(snapshot.activity, "")
+        # Short form for status label, full form for tray tooltip
+        short = f"\U0001f441 {snapshot.app_name} {emoji}"
+        full = f"\U0001f441 {snapshot.app_name} \u2014 {snapshot.description} {emoji}"
+        # Both updates must happen on Qt main thread — use signal for label,
+        # and pack tray tooltip into the same signal handler
+        self._pending_tray_tooltip = f"Antidoom Buddy\n{full}"
+        self.window.signal_bridge.update_activity.emit(short)
+
+    def _update_tray_tooltip(self, _text: str):
+        """Update tray tooltip — runs on Qt main thread via signal."""
+        if hasattr(self, 'tray'):
+            self.tray.setToolTip(self._pending_tray_tooltip)
 
     def _setup_tray(self):
         """System tray icon with menu."""
@@ -132,11 +161,11 @@ class AntidoomApp:
         menu = QMenu()
 
         open_action = QAction("Open Buddy", self.qt_app)
-        open_action.triggered.connect(lambda: self._handle_trigger("user_initiated"))
+        open_action.triggered.connect(lambda: self._open_from_tray("user_initiated"))
         menu.addAction(open_action)
 
         morning_action = QAction("Morning Check-in", self.qt_app)
-        morning_action.triggered.connect(lambda: self._handle_trigger("morning_checkin"))
+        morning_action.triggered.connect(lambda: self._open_from_tray("morning_checkin"))
         menu.addAction(morning_action)
 
         menu.addSeparator()
@@ -164,24 +193,64 @@ class AntidoomApp:
             log.info("Trigger %s suppressed — onboarding in progress", trigger)
             return
         if self._conversation_active:
-            log.info("Trigger %s suppressed — conversation already active", trigger)
+            if self.window._conversation_done:
+                # Stale window — preempt it with the new trigger
+                log.info("Trigger %s preempting stale (done) window", trigger)
+                self._cleanup_stale_conversation()
+                self.window.signal_bridge.preempt_conversation.emit(trigger)
+            else:
+                log.info("Trigger %s suppressed — conversation already active", trigger)
             return
         self.window.signal_bridge.show_window.emit(trigger)
 
-    def _handle_trigger(self, trigger: str):
-        """Start a buddy conversation for the given trigger."""
-        log.info("Handling trigger: %s", trigger)
-        message, sig = self.buddy.start_conversation(trigger)
-        log.info("Conversation started, showing window (signal=%s)", sig)
+    def _cleanup_stale_conversation(self):
+        """Clean up a stale conversation before preempting with a new one."""
+        self.triggers.reset_cooldown()
+        if not self._user_engaged and self.buddy.current_convo and self.buddy.current_convo.trigger in (
+            "nudge", "extended_nudge", "we_need_to_talk",
+        ):
+            self.triggers.dismiss_nudge(self.buddy.current_convo.trigger)
+        # Snapshot the convo before start_conversation overwrites it
+        stale_convo = self.buddy.current_convo
+        import threading
+        threading.Thread(target=self.buddy.extract_memories_from, args=(stale_convo,), daemon=True).start()
 
-        # Emit signal to show conversation on main Qt thread (safe from any thread)
-        self.window.signal_bridge.show_conversation.emit(message, sig)
-
-    def _show_conversation(self, message: str, signal: str):
+    def _open_from_tray(self, trigger: str):
+        """Open buddy from tray menu — show typing immediately, API call in background."""
+        if self._conversation_active:
+            return
         self._conversation_active = True
         self._user_engaged = False
-        self.window.popup(buddy_message=message)
-        # Window stays open until user explicitly dismisses
+        self.window.popup_with_typing(trigger=trigger)
+        import threading
+        threading.Thread(target=self._handle_trigger, args=(trigger,), daemon=True).start()
+
+    def _handle_trigger(self, trigger: str):
+        """Start a buddy conversation for the given trigger.
+
+        When called from _handle_show_trigger, the window is already visible with
+        typing indicator. We just need to get the message and deliver it.
+        """
+        log.info("Handling trigger: %s", trigger)
+        self._conversation_active = True
+        self._user_engaged = False
+        message, sig = self.buddy.start_conversation(trigger)
+        log.info("Conversation started, showing message (signal=%s)", sig)
+
+        # Emit signal to show conversation on main Qt thread
+        self.window.signal_bridge.show_conversation.emit(message, sig, trigger)
+
+    def _show_conversation(self, message: str, signal: str, trigger: str):
+        """Called on main thread when conversation message is ready."""
+        # If window is already showing (from _handle_show_trigger with typing indicator),
+        # just replace the typing indicator with the real message.
+        if self.window.isVisible() and self.window._typing_visible:
+            self.window.show_initial_message(message, signal=signal)
+        else:
+            # Direct open (e.g. tray menu click, onboarding) — show popup normally
+            self._conversation_active = True
+            self._user_engaged = False
+            self.window.popup(buddy_message=message, trigger=trigger, signal=signal)
 
     def _handle_user_message(self, text: str) -> tuple[str, str]:
         """Called from chat window when user sends a message."""
@@ -225,7 +294,7 @@ class AntidoomApp:
         def _do():
             self._onboarding = True
             message, sig = self.buddy.start_onboarding()
-            self.window.signal_bridge.show_conversation.emit(message, sig)
+            self.window.signal_bridge.show_conversation.emit(message, sig, "onboarding")
         threading.Thread(target=_do, daemon=True).start()
 
     def _debug_shutdown(self):

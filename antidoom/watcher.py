@@ -221,8 +221,12 @@ class Watcher:
                     self.state.consecutive_doom_count(),
                     self.state.consecutive_productive_count(),
                 )
-                for cb in self._on_snapshot_callbacks:
-                    cb(snapshot)
+                for i, cb in enumerate(self._on_snapshot_callbacks):
+                    try:
+                        cb(snapshot)
+                    except Exception as cb_err:
+                        log.error("Watcher callback %d error: %s", i, cb_err, exc_info=True)
             except Exception as e:
                 log.error("Watcher error: %s", e, exc_info=True)
+            log.debug("Watcher sleeping %ds", self.interval)
             time.sleep(self.interval)
