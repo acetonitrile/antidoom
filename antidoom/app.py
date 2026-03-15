@@ -77,7 +77,7 @@ def _make_tray_icon() -> QIcon:
     painter.setPen(QColor(255, 255, 255))
     font = QFont("Helvetica", 22, QFont.Weight.Bold)
     painter.setFont(font)
-    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "AD")
+    painter.drawText(pixmap.rect(), Qt.AlignmentFlag.AlignCenter, "Z")
     painter.end()
 
     return QIcon(pixmap)
@@ -130,7 +130,7 @@ class AntidoomApp:
         # Wire up activity status updates
         self.watcher.on_snapshot(self._on_snapshot_for_status)
         self.window.signal_bridge.update_activity.connect(self._update_tray_tooltip)
-        self._pending_tray_tooltip = "Antidoom Buddy"
+        self._pending_tray_tooltip = "Zerei"
 
         # Triggers fire into the window via signal bridge — but gate on active state
         self.triggers.on_trigger(self._on_trigger_fired)
@@ -157,11 +157,11 @@ class AntidoomApp:
         """System tray icon with menu."""
         self.tray = QSystemTrayIcon()
         self.tray.setIcon(_make_tray_icon())
-        self.tray.setToolTip("Antidoom Buddy")
+        self.tray.setToolTip("Zerei")
 
         menu = QMenu()
 
-        open_action = QAction("Open Buddy", self.qt_app)
+        open_action = QAction("Open Zerei", self.qt_app)
         open_action.triggered.connect(lambda: self._open_from_tray("user_initiated"))
         menu.addAction(open_action)
 

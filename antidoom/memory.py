@@ -10,17 +10,6 @@ DATA_DIR = Path(__file__).resolve().parent.parent / ".antidoom"
 
 
 @dataclass
-class Goal:
-    text: str
-    scope: str  # "weekly" or "daily"
-    created_at: str = ""
-
-    def __post_init__(self):
-        if not self.created_at:
-            self.created_at = datetime.now().isoformat()
-
-
-@dataclass
 class Message:
     role: str  # "user" or "assistant"
     content: str
@@ -49,7 +38,6 @@ class Memory:
     def __init__(self, data_dir: Path = DATA_DIR):
         self.data_dir = data_dir
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._goals_file = data_dir / "goals.json"
         self._conversations_dir = data_dir / "conversations"
         self._conversations_dir.mkdir(exist_ok=True)
 
@@ -69,35 +57,6 @@ class Memory:
 
     def has_profile(self) -> bool:
         return (self.data_dir / "profile.json").exists()
-
-    # --- Goals ---
-
-    def get_goals(self) -> list[Goal]:
-        if not self._goals_file.exists():
-            return []
-        data = json.loads(self._goals_file.read_text())
-        return [Goal(**g) for g in data]
-
-    def save_goals(self, goals: list[Goal]):
-        self._goals_file.write_text(json.dumps([asdict(g) for g in goals], indent=2))
-
-    def set_daily_goal(self, text: str):
-        goals = [g for g in self.get_goals() if g.scope != "daily"]
-        goals.append(Goal(text=text, scope="daily"))
-        self.save_goals(goals)
-
-    def set_weekly_goals(self, texts: list[str]):
-        goals = [g for g in self.get_goals() if g.scope != "weekly"]
-        for t in texts:
-            goals.append(Goal(text=t, scope="weekly"))
-        self.save_goals(goals)
-
-    def get_active_goals(self) -> dict[str, list[str]]:
-        goals = self.get_goals()
-        return {
-            "weekly": [g.text for g in goals if g.scope == "weekly"],
-            "daily": [g.text for g in goals if g.scope == "daily"],
-        }
 
     # --- Buddy memories (learnings from conversations) ---
 
@@ -186,7 +145,7 @@ class Memory:
             lines.append(f"Started: {convo.started_at}")
             lines.append(f"{'=' * 60}")
             for msg in convo.messages:
-                role = "BUDDY" if msg.role == "assistant" else "YOU"
+                role = "ZEREI" if msg.role == "assistant" else "YOU"
                 lines.append(f"[{msg.timestamp}] {role}: {msg.content}")
             lines.append("")
         output_path.write_text("\n".join(lines))

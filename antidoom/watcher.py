@@ -16,6 +16,8 @@ import anthropic
 
 log = logging.getLogger(__name__)
 
+VISION_MODEL = "claude-sonnet-4-6"
+
 
 class Activity(Enum):
     PRODUCTIVE = "productive"
@@ -86,7 +88,7 @@ Classify the activity into exactly one category:
 
 CLASSIFICATION_PROMPT_SUFFIX = """
 Respond with JSON only, no markdown:
-{"activity": "<category>", "description": "<what the user is doing in 10 words or less>", "app_name": "<best guess at app name>"}
+{"activity": "<category>", "description": "<specific content visible on screen — include thread titles, subreddit/channel names, article headlines, tab names, or code context. Be concrete, not generic. 30 words max.>", "app_name": "<best guess at app name>"}
 """
 
 
@@ -131,7 +133,7 @@ def classify_screenshot(client: anthropic.Anthropic, png_bytes: bytes, profile: 
     log.debug("Sending screenshot to Claude for classification (%d bytes)", len(png_bytes))
 
     response = client.messages.create(
-        model="claude-sonnet-4-6",
+        model=VISION_MODEL,
         max_tokens=200,
         messages=[
             {

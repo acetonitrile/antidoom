@@ -65,7 +65,7 @@ class ChatWindow(QMainWindow):
         self._setup_ui()
 
     def _setup_ui(self):
-        self.setWindowTitle("Antidoom Buddy")
+        self.setWindowTitle("Zerei")
         self.setFixedSize(420, 520)
 
         # Frameless, always on top, translucent
@@ -87,7 +87,7 @@ class ChatWindow(QMainWindow):
 
         # Header
         header = QHBoxLayout()
-        title = QLabel("antidoom buddy")
+        title = QLabel("zerei")
         title.setStyleSheet("color: rgba(255,255,255,0.6); font-size: 12px; font-weight: 600;")
         header.addWidget(title)
 
@@ -224,7 +224,7 @@ class ChatWindow(QMainWindow):
         color = self._current_theme["buddy_color"]
         typing_html = (
             f'<div style="margin: 8px 0;"><span style="color: {color}; '
-            f'font-weight: 600;">buddy:</span> {dots}</div>'
+            f'font-weight: 600;">zerei:</span> {dots}</div>'
         )
         # Restore snapshot + typing line
         self.chat_area.setHtml(self._html_before_typing)
@@ -271,7 +271,7 @@ class ChatWindow(QMainWindow):
         color = self._current_theme["buddy_color"]
         self.chat_area.append(
             f'<div style="margin: 8px 0;"><span style="color: {color}; '
-            f'font-weight: 600;">buddy:</span> {text}</div>'
+            f'font-weight: 600;">zerei:</span> {text}</div>'
         )
         # Scroll to bottom
         scrollbar = self.chat_area.verticalScrollBar()
@@ -376,12 +376,12 @@ class ChatWindow(QMainWindow):
         self._auto_close_timer = QTimer()
         self._auto_close_timer.setSingleShot(True)
         self._auto_close_timer.timeout.connect(self._auto_close_if_done)
-        self._auto_close_timer.start(15000)
+        self._auto_close_timer.start(30000)
 
     def _auto_close_if_done(self):
         """Auto-dismiss if still in 'press enter to close' state."""
         if self._conversation_done and self.isVisible():
-            log.info("Auto-closing window after 15s idle in close-ready state")
+            log.info("Auto-closing window after 30s idle in close-ready state")
             self._dismiss()
 
     def auto_minimize(self, delay_ms: int = 2000):
