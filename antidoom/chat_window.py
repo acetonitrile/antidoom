@@ -62,6 +62,7 @@ class ChatWindow(QMainWindow):
         self._awaiting_initial = False  # True while waiting for first buddy message
         self._queued_message: str | None = None  # user typed while awaiting initial
         self._html_before_typing = ""  # snapshot of chat HTML before typing indicator
+        self._current_trigger: str | None = None  # track current conversation trigger
         self._setup_ui()
 
     def _setup_ui(self):
@@ -291,6 +292,7 @@ class ChatWindow(QMainWindow):
         """Show the window, optionally with an initial buddy message."""
         log.info("Popup window shown (message=%s, trigger=%s)", bool(buddy_message), trigger)
         self._conversation_done = False
+        self._current_trigger = trigger
         self.input_field.setPlaceholderText("Type here...")
         self.chat_area.clear()
         self._apply_theme(trigger)
@@ -317,6 +319,7 @@ class ChatWindow(QMainWindow):
         """Show the window immediately with typing indicator (no message yet)."""
         log.info("Popup with typing (trigger=%s)", trigger)
         self._conversation_done = False
+        self._current_trigger = trigger
         self._awaiting_initial = True
         self._queued_message = None
         self.input_field.setPlaceholderText("Type here...")
@@ -366,8 +369,9 @@ class ChatWindow(QMainWindow):
             self._conversation_done = True
             self.input_field.setPlaceholderText("Press Enter to close")
             self.input_field.setFocus()
-            # Auto-close after 15s if user doesn't interact
-            self._start_auto_close_timer()
+            # Don't auto-close onboarding — let user read and close manually
+            if self._current_trigger != "onboarding":
+                self._start_auto_close_timer()
 
     def _start_auto_close_timer(self):
         """Start a 15s timer that auto-dismisses if conversation is done."""
@@ -451,8 +455,10 @@ class ChatWindow(QMainWindow):
             self._conversation_done = True
             self.input_field.setPlaceholderText("Press Enter to close")
             self.input_field.setFocus()
-            # Auto-close after 3s — user already engaged, buddy is wrapping up
-            QTimer.singleShot(3000, self._auto_close_if_done)
+            # Don't auto-close onboarding — let user close manually
+            if self._current_trigger != "onboarding":
+                # Auto-close after 3s — user already engaged, buddy is wrapping up
+                QTimer.singleShot(3000, self._auto_close_if_done)
 
     def _handle_show_trigger(self, trigger: str):
         """Called via signal bridge from trigger engine thread."""

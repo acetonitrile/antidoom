@@ -77,6 +77,16 @@ class WatcherState:
                     results.append(s)
         return results
 
+    def consecutive_ambiguous_count(self) -> int:
+        """How many consecutive recent snapshots are ambiguous."""
+        count = 0
+        for s in reversed(self.history):
+            if s.activity == Activity.AMBIGUOUS:
+                count += 1
+            else:
+                break
+        return count
+
     def consecutive_productive_count(self) -> int:
         count = 0
         for s in reversed(self.history):

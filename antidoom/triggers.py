@@ -23,6 +23,9 @@ class TriggerConfig:
     nudge_cooldown: int = 300              # 5 min initial (→ 2.5min → 1.25min → floor)
     nudge_cooldown_floor: int = 60         # 1 min minimum
 
+    # Ambiguous activity — ask user to clarify
+    ambiguous_threshold: int = 10          # ~5 min of consecutive ambiguous
+
     # Welcome back / goal check-in after absence
     absence_threshold: float = 4 * 3600    # 4 hours (seconds)
 
@@ -48,16 +51,23 @@ class TriggerEngine:
         """Called after each new snapshot. Decides if a trigger should fire."""
         now = datetime.now().timestamp()
 
-        # Welcome back after absence — fires once, before any other trigger
-        if self._last_snapshot_time > 0:
-            gap = now - self._last_snapshot_time
-            if gap >= self.config.absence_threshold and not self._welcome_back_fired:
-                self._welcome_back_fired = True
-                log.info("TRIGGER FIRED: goal_setting (absence of %.0f min)", gap / 60)
-                self._last_snapshot_time = now
-                if self._on_trigger_callback:
-                    self._on_trigger_callback("goal_setting")
-                return  # don't evaluate other triggers this tick
+        # Goal check-in — fires on first snapshot (app launch) and after long absence
+        if self._last_snapshot_time == 0:
+            # First snapshot since app started — always check in
+            self._welcome_back_fired = True
+            self._last_snapshot_time = now
+            log.info("TRIGGER FIRED: goal_setting (app launch)")
+            if self._on_trigger_callback:
+                self._on_trigger_callback("goal_setting")
+            return
+        gap = now - self._last_snapshot_time
+        if gap >= self.config.absence_threshold and not self._welcome_back_fired:
+            self._welcome_back_fired = True
+            log.info("TRIGGER FIRED: goal_setting (absence of %.0f min)", gap / 60)
+            self._last_snapshot_time = now
+            if self._on_trigger_callback:
+                self._on_trigger_callback("goal_setting")
+            return  # don't evaluate other triggers this tick
         self._last_snapshot_time = now
         # Reset welcome_back flag once we've had a normal tick
         if self._welcome_back_fired:
@@ -65,11 +75,12 @@ class TriggerEngine:
 
         consec_doom = watcher_state.consecutive_doom_count()
         consec_prod = watcher_state.consecutive_productive_count()
+        consec_ambiguous = watcher_state.consecutive_ambiguous_count()
         doom_mins = watcher_state.doom_scroll_minutes(window_minutes=480)
 
         log.debug(
-            "Evaluating: activity=%s consec_doom=%d consec_prod=%d doom_8h=%.1fmin dismissed=%d",
-            snapshot.activity.value, consec_doom, consec_prod, doom_mins, self._nudges_dismissed,
+            "Evaluating: activity=%s consec_doom=%d consec_prod=%d consec_ambig=%d doom_8h=%.1fmin dismissed=%d",
+            snapshot.activity.value, consec_doom, consec_prod, consec_ambiguous, doom_mins, self._nudges_dismissed,
         )
 
         # Reset grind break tracker when productive streak breaks
@@ -106,6 +117,10 @@ class TriggerEngine:
         # Long grind — suggest a break (only once per streak)
         elif consec_prod >= self.config.grind_threshold and consec_prod > self._grind_break_fired_at:
             trigger = "grind_break"
+
+        # Ambiguous activity — ask user to clarify what they're doing
+        elif consec_ambiguous >= self.config.ambiguous_threshold:
+            trigger = "ambiguous_checkin"
 
         if trigger and self._on_trigger_callback:
             log.info("TRIGGER FIRED: %s", trigger)

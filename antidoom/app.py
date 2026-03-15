@@ -96,6 +96,7 @@ class AntidoomApp:
                 doom_extended_threshold=4, # 4 snapshots (~40s vs ~5min)
                 doom_we_need_to_talk=5.0, # 5 min (vs 3 hours)
                 grind_threshold=6,        # ~1 min (vs 90 min)
+                ambiguous_threshold=3,    # 3 snapshots (~30s vs ~5min)
                 nudge_cooldown=30,        # 30s initial (→ 15s → 8s → floor)
                 nudge_cooldown_floor=5,   # 5s floor in debug
                 absence_threshold=120,    # 2 min (vs 4 hours)
