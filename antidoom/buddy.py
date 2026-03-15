@@ -80,11 +80,19 @@ signals:
 - if no goals, ask: "what are you trying to get done today?"
 - once they've confirmed, affirm and signal closing. one clear goal > a perfect plan.
 
-**reflection**: this is your diary mode. the user chose to reflect — be a thoughtful conversation partner, not a scorecard. this is where you go deeper:
-- "how are you actually doing?"
-- "what's been on your mind?"
-- "anything you want to change or carry forward?"
-don't rush this. let them talk. if they mention completing goals, celebrate. if they're struggling, be curious about why. stay keep_open until it feels complete. longer exchanges are good here. this is where the real work happens.
+**reflection**: this is your deepest mode. the user chose to reflect — this is where the real work happens. you are a diary that talks back, a mirror that asks questions.
+
+open with something grounded in what you actually know — their recent activity, their goals, their state. not a generic "how are you doing?"
+
+threads to pull on (pick what feels right, don't run through a checklist):
+- **patterns**: "i've noticed you keep ending up on X around [time]. what's pulling you there?" connect dots across sessions.
+- **goals vs reality**: "you said you wanted to [goal]. how's that actually going?" be honest about the gap if there is one.
+- **long-term thinking**: "zoom out for a sec — where are you trying to get to? not today, but bigger picture." help them connect daily grind to what actually matters to them.
+- **what's working**: "what's been working for you lately?" not everything has to be about problems.
+- **ambiguous activities**: if you see activities in the context that were hard to classify, ask about them naturally. "i saw you on Discord earlier — was that work or were you just hanging out?" use their answer to understand them better.
+- **life stuff**: they might want to talk about things beyond work. that's fine. this is their space.
+
+don't rush this. let them talk. stay keep_open until it feels complete. longer exchanges are encouraged — this is the mode where 5-10 back-and-forths is normal.
 
 **user_initiated**: they opened the window themselves. follow their lead. be available.
 """
@@ -164,6 +172,7 @@ Things worth remembering:
 - Commitments or intentions they mentioned ("said they'd take a break after this PR", "wants to go for a walk at 3pm on 2026-03-14")
 - Personal context they shared ("has a meeting at 2pm on 2026-03-14", "didn't sleep well", "excited about new feature")
 - Preferences or patterns you noticed ("responds well to humor", "gets defensive when asked directly about doom scrolling")
+- Activity clarifications — if the user said something like "Discord is for work" or "Reddit was just browsing", remember that so the classifier can be more accurate
 
 Things NOT worth remembering:
 - Anything already in their profile (role, projects, distractions, goals)
@@ -171,6 +180,7 @@ Things NOT worth remembering:
 
 Also check: should anything in the user's profile be updated based on this conversation?
 - If they mentioned switching projects, new distractions, etc. — update the relevant field
+- If they clarified that an app/site IS work-related, add it to "projects" or "notes". If they confirmed something IS a distraction, add it to "distractions".
 - IMPORTANT for profile_updates: Profile updates are MERGED into the existing profile, not replaced. If updating "distractions", include BOTH the existing value and new info.
 
 Current profile:
@@ -281,6 +291,14 @@ def _build_context(
         parts.append("Things you remember about this user:")
         for m in memories:
             parts.append(f"  - {m['text']}")
+
+    # For reflection mode: surface ambiguous activities for clarification
+    if trigger == "reflection" and watcher_state:
+        ambiguous = watcher_state.recent_ambiguous()
+        if ambiguous:
+            parts.append("Activities you weren't sure about (ask the user to clarify):")
+            for s in ambiguous:
+                parts.append(f"  - {s.app_name}: {s.description}")
 
     parts.append(f"Conversation trigger: {trigger}")
     parts.append(f"Current time: {datetime.now().strftime('%I:%M %p, %A')}")

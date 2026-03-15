@@ -65,6 +65,18 @@ class WatcherState:
                 break
         return count
 
+    def recent_ambiguous(self) -> list[Snapshot]:
+        """Return deduplicated ambiguous snapshots from the current session."""
+        seen = set()
+        results = []
+        for s in reversed(self.history):
+            if s.activity == Activity.AMBIGUOUS:
+                # Dedupe by app name to avoid "Discord" x 10
+                if s.app_name not in seen:
+                    seen.add(s.app_name)
+                    results.append(s)
+        return results
+
     def consecutive_productive_count(self) -> int:
         count = 0
         for s in reversed(self.history):
