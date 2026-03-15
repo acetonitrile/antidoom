@@ -98,6 +98,7 @@ class AntidoomApp:
                 grind_threshold=6,        # ~1 min (vs 90 min)
                 nudge_cooldown=30,        # 30s initial (→ 15s → 8s → floor)
                 nudge_cooldown_floor=5,   # 5s floor in debug
+                absence_threshold=120,    # 2 min (vs 4 hours)
             )
         else:
             watcher_interval = 30
@@ -164,9 +165,9 @@ class AntidoomApp:
         open_action.triggered.connect(lambda: self._open_from_tray("user_initiated"))
         menu.addAction(open_action)
 
-        morning_action = QAction("Morning Check-in", self.qt_app)
-        morning_action.triggered.connect(lambda: self._open_from_tray("morning_checkin"))
-        menu.addAction(morning_action)
+        reflect_action = QAction("Reflect", self.qt_app)
+        reflect_action.triggered.connect(lambda: self._open_from_tray("reflection"))
+        menu.addAction(reflect_action)
 
         menu.addSeparator()
 
@@ -316,11 +317,10 @@ class AntidoomApp:
         )
 
     def _start_background_services(self):
-        """Start watcher and scheduled check-ins."""
+        """Start watcher."""
         if not self.watcher._running:
-            log.info("Starting background services (watcher + check-ins)")
+            log.info("Starting background services (watcher)")
             self.watcher.start()
-            self.triggers.start_scheduled_checkins()
 
     def run(self):
         # If no profile yet, start onboarding first — background services start after
@@ -329,6 +329,7 @@ class AntidoomApp:
             QTimer.singleShot(500, self._start_onboarding)
         else:
             # Profile exists, start services immediately
+            # goal_setting will fire automatically on first snapshot (absence detection)
             self._start_background_services()
 
         # Allow Ctrl+C to work

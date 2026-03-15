@@ -1,8 +1,7 @@
 """Trigger logic — decides when the buddy should pop up and what kind of conversation to start."""
 
 import logging
-import threading
-from datetime import datetime, time
+from datetime import datetime
 from dataclasses import dataclass
 
 from .watcher import WatcherState, Snapshot, Activity
@@ -24,10 +23,8 @@ class TriggerConfig:
     nudge_cooldown: int = 300              # 5 min initial (→ 2.5min → 1.25min → floor)
     nudge_cooldown_floor: int = 60         # 1 min minimum
 
-    # Scheduled check-in times
-    morning_checkin: time = time(9, 0)
-    midday_checkin: time = time(13, 0)
-    evening_checkin: time = time(17, 30)
+    # Welcome back / goal check-in after absence
+    absence_threshold: float = 4 * 3600    # 4 hours (seconds)
 
 
 class TriggerEngine:
@@ -38,10 +35,10 @@ class TriggerEngine:
         self._last_nudge_time: float = 0
         self._nudges_dismissed: int = 0
         self._on_trigger_callback = None
-        self._scheduled_thread: threading.Thread | None = None
         self._running = False
-        self._fired_checkins: set[str] = set()  # track which check-ins fired today
         self._grind_break_fired_at: int = 0  # productive count when last grind break fired
+        self._last_snapshot_time: float = 0  # timestamp of last snapshot
+        self._welcome_back_fired: bool = False  # only fire once per absence
 
     def on_trigger(self, callback):
         """Register callback(trigger_type: str) called when buddy should pop up."""
@@ -50,6 +47,22 @@ class TriggerEngine:
     def evaluate(self, snapshot: Snapshot, watcher_state: WatcherState):
         """Called after each new snapshot. Decides if a trigger should fire."""
         now = datetime.now().timestamp()
+
+        # Welcome back after absence — fires once, before any other trigger
+        if self._last_snapshot_time > 0:
+            gap = now - self._last_snapshot_time
+            if gap >= self.config.absence_threshold and not self._welcome_back_fired:
+                self._welcome_back_fired = True
+                log.info("TRIGGER FIRED: goal_setting (absence of %.0f min)", gap / 60)
+                self._last_snapshot_time = now
+                if self._on_trigger_callback:
+                    self._on_trigger_callback("goal_setting")
+                return  # don't evaluate other triggers this tick
+        self._last_snapshot_time = now
+        # Reset welcome_back flag once we've had a normal tick
+        if self._welcome_back_fired:
+            self._welcome_back_fired = False
+
         consec_doom = watcher_state.consecutive_doom_count()
         consec_prod = watcher_state.consecutive_productive_count()
         doom_mins = watcher_state.doom_scroll_minutes(window_minutes=480)
@@ -120,38 +133,5 @@ class TriggerEngine:
         log.info("User engaged, resetting dismissed count")
         self._nudges_dismissed = 0
 
-    def start_scheduled_checkins(self):
-        """Background thread that fires scheduled check-ins."""
-        self._running = True
-        self._scheduled_thread = threading.Thread(target=self._checkin_loop, daemon=True)
-        self._scheduled_thread.start()
-        log.info("Scheduled check-ins started")
-
     def stop(self):
         self._running = False
-
-    def _checkin_loop(self):
-        import time as time_mod
-        while self._running:
-            now = datetime.now()
-            today_key = now.strftime("%Y-%m-%d")
-            current_time = now.time()
-
-            checkins = [
-                ("morning_checkin", self.config.morning_checkin),
-                ("midday_checkin", self.config.midday_checkin),
-                ("evening_checkin", self.config.evening_checkin),
-            ]
-
-            for name, scheduled_time in checkins:
-                key = f"{today_key}_{name}"
-                if key not in self._fired_checkins:
-                    # Fire if we're within 5 minutes after scheduled time
-                    scheduled_minutes = scheduled_time.hour * 60 + scheduled_time.minute
-                    current_minutes = current_time.hour * 60 + current_time.minute
-                    if 0 <= (current_minutes - scheduled_minutes) <= 5:
-                        self._fired_checkins.add(key)
-                        if self._on_trigger_callback:
-                            self._on_trigger_callback(name)
-
-            time_mod.sleep(30)

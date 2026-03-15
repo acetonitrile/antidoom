@@ -60,6 +60,7 @@ class ChatWindow(QMainWindow):
         self._typing_dot_count = 0
         self._typing_visible = False
         self._awaiting_initial = False  # True while waiting for first buddy message
+        self._queued_message: str | None = None  # user typed while awaiting initial
         self._html_before_typing = ""  # snapshot of chat HTML before typing indicator
         self._setup_ui()
 
@@ -316,9 +317,10 @@ class ChatWindow(QMainWindow):
         """Show the window immediately with typing indicator (no message yet)."""
         log.info("Popup with typing (trigger=%s)", trigger)
         self._conversation_done = False
-        self._awaiting_initial = True  # block user input until first message arrives
-        self.input_field.setPlaceholderText("Thinking...")
-        self.input_field.setEnabled(False)
+        self._awaiting_initial = True
+        self._queued_message = None
+        self.input_field.setPlaceholderText("Type here...")
+        self.input_field.setEnabled(True)
         self.chat_area.clear()
         self._apply_theme(trigger)
 
@@ -328,6 +330,7 @@ class ChatWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+        self.input_field.setFocus()
 
         # Play sound
         if trigger == "we_need_to_talk":
@@ -338,12 +341,24 @@ class ChatWindow(QMainWindow):
     def show_initial_message(self, message: str, signal: str = SIGNAL_KEEP_OPEN):
         """Remove typing indicator and show the real first message."""
         self._awaiting_initial = False
-        self.input_field.setEnabled(True)
-        self.input_field.setPlaceholderText("Type here...")
-        self.input_field.setFocus()
         self._remove_typing_indicator()
         self.show_buddy_message(message)
         self._check_signal(signal)
+
+        # If user typed while we were waiting, send their queued message now
+        if self._queued_message and not self._conversation_done:
+            queued = self._queued_message
+            self._queued_message = None
+            self._show_typing_indicator()
+            if self._on_user_message:
+                import threading
+                def _do():
+                    reply, sig = self._on_user_message(queued)
+                    self.signal_bridge.show_reply.emit(reply, sig)
+                threading.Thread(target=_do, daemon=True).start()
+        else:
+            self._queued_message = None
+            self.input_field.setFocus()
 
     def _check_signal(self, signal: str):
         """If buddy signals closing/minimize, enter 'press enter to close' mode."""
@@ -391,6 +406,14 @@ class ChatWindow(QMainWindow):
         if not text:
             if self._conversation_done:
                 self._dismiss()
+            return
+
+        # If still waiting for buddy's first message, queue the user's message
+        if self._awaiting_initial:
+            self._queued_message = text
+            self.input_field.clear()
+            self.show_user_message(text)
+            log.info("Queued user message while awaiting initial: %s", text[:50])
             return
 
         # If conversation is wrapping up and user sends a farewell, just close
@@ -462,8 +485,9 @@ class ChatWindow(QMainWindow):
         # Reset state
         self._conversation_done = False
         self._awaiting_initial = True
-        self.input_field.setEnabled(False)
-        self.input_field.setPlaceholderText("Thinking...")
+        self._queued_message = None
+        self.input_field.setPlaceholderText("Type here...")
+        self.input_field.setEnabled(True)
         self.chat_area.clear()
         self._apply_theme(trigger)
         self._show_typing_indicator()
