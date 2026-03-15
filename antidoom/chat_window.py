@@ -1,4 +1,4 @@
-"""Floating chat window — PyQt6-based UI for the cowork buddy."""
+"""Floating chat window — PyQt6-based UI for Zerei."""
 
 import logging
 import subprocess
@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QObject
 from PyQt6.QtGui import QFont, QKeySequence, QShortcut, QIcon, QAction, QTextCursor
 
-from .buddy import SIGNAL_CLOSING, SIGNAL_MINIMIZE, SIGNAL_KEEP_OPEN
+from .zerei import SIGNAL_CLOSING, SIGNAL_MINIMIZE, SIGNAL_KEEP_OPEN
 
 log = logging.getLogger(__name__)
 
@@ -25,12 +25,12 @@ _SOUNDS = {
 _THEME_BLUE = {
     "accent": "rgba(120, 160, 255, {a})",
     "border": "rgba(255, 255, 255, 0.1)",
-    "buddy_color": "rgba(120,160,255,0.9)",
+    "zerei_color": "rgba(120,160,255,0.9)",
 }
 _THEME_RED = {
     "accent": "rgba(255, 90, 70, {a})",
     "border": "rgba(255, 90, 70, 0.3)",
-    "buddy_color": "rgba(255,90,70,0.9)",
+    "zerei_color": "rgba(255,90,70,0.9)",
 }
 
 
@@ -54,12 +54,12 @@ class ChatWindow(QMainWindow):
         self.signal_bridge.update_activity.connect(self._update_status_label)
         self.signal_bridge.preempt_conversation.connect(self._preempt_for_new_trigger)
         self._pending_trigger: str | None = None
-        self._conversation_done = False  # True when buddy signals closing/minimize
+        self._conversation_done = False  # True when zerei signals closing/minimize
         self._current_theme = _THEME_BLUE
         self._typing_timer: QTimer | None = None
         self._typing_dot_count = 0
         self._typing_visible = False
-        self._awaiting_initial = False  # True while waiting for first buddy message
+        self._awaiting_initial = False  # True while waiting for first zerei message
         self._queued_message: str | None = None  # user typed while awaiting initial
         self._html_before_typing = ""  # snapshot of chat HTML before typing indicator
         self._current_trigger: str | None = None  # track current conversation trigger
@@ -209,7 +209,7 @@ class ChatWindow(QMainWindow):
                 log.debug("Could not play sound %s", sound_name)
 
     def _show_typing_indicator(self):
-        """Show animated typing dots from buddy."""
+        """Show animated typing dots from zerei."""
         self._typing_dot_count = 0
         self._typing_visible = True
         # Snapshot the current HTML so we can restore it cleanly
@@ -222,7 +222,7 @@ class ChatWindow(QMainWindow):
 
     def _update_typing_dots(self, dots: str):
         """Rewrite chat HTML with typing indicator appended to the snapshot."""
-        color = self._current_theme["buddy_color"]
+        color = self._current_theme["zerei_color"]
         typing_html = (
             f'<div style="margin: 8px 0;"><span style="color: {color}; '
             f'font-weight: 600;">zerei:</span> {dots}</div>'
@@ -260,16 +260,16 @@ class ChatWindow(QMainWindow):
         self.status_label.setToolTip(text)  # full text on hover
 
     def set_on_message(self, callback):
-        """Set callback(user_text: str) -> (buddy_reply: str, signal: str)."""
+        """Set callback(user_text: str) -> (zerei_reply: str, signal: str)."""
         self._on_user_message = callback
 
     def set_on_dismissed(self, callback):
         """Set callback() called when window is dismissed without user engaging."""
         self._on_window_dismissed = callback
 
-    def show_buddy_message(self, text: str):
-        """Append a buddy message to the chat."""
-        color = self._current_theme["buddy_color"]
+    def show_zerei_message(self, text: str):
+        """Append a zerei message to the chat."""
+        color = self._current_theme["zerei_color"]
         self.chat_area.append(
             f'<div style="margin: 8px 0;"><span style="color: {color}; '
             f'font-weight: 600;">zerei:</span> {text}</div>'
@@ -287,18 +287,18 @@ class ChatWindow(QMainWindow):
         scrollbar = self.chat_area.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def popup(self, buddy_message: str | None = None, trigger: str | None = None,
+    def popup(self, zerei_message: str | None = None, trigger: str | None = None,
              signal: str = SIGNAL_KEEP_OPEN):
-        """Show the window, optionally with an initial buddy message."""
-        log.info("Popup window shown (message=%s, trigger=%s)", bool(buddy_message), trigger)
+        """Show the window, optionally with an initial zerei message."""
+        log.info("Popup window shown (message=%s, trigger=%s)", bool(zerei_message), trigger)
         self._conversation_done = False
         self._current_trigger = trigger
         self.input_field.setPlaceholderText("Type here...")
         self.chat_area.clear()
         self._apply_theme(trigger)
 
-        if buddy_message:
-            self.show_buddy_message(buddy_message)
+        if zerei_message:
+            self.show_zerei_message(zerei_message)
 
         self._center_on_screen()
         self.show()
@@ -312,7 +312,7 @@ class ChatWindow(QMainWindow):
         else:
             self._play_sound("gentle")
 
-        # Honor buddy signal (e.g. grind_break with signal=closing)
+        # Honor zerei signal (e.g. grind_break with signal=closing)
         self._check_signal(signal)
 
     def popup_with_typing(self, trigger: str | None = None):
@@ -345,7 +345,7 @@ class ChatWindow(QMainWindow):
         """Remove typing indicator and show the real first message."""
         self._awaiting_initial = False
         self._remove_typing_indicator()
-        self.show_buddy_message(message)
+        self.show_zerei_message(message)
         self._check_signal(signal)
 
         # If user typed while we were waiting, send their queued message now
@@ -364,7 +364,7 @@ class ChatWindow(QMainWindow):
             self.input_field.setFocus()
 
     def _check_signal(self, signal: str):
-        """If buddy signals closing/minimize, enter 'press enter to close' mode."""
+        """If zerei signals closing/minimize, enter 'press enter to close' mode."""
         if signal in (SIGNAL_CLOSING, SIGNAL_MINIMIZE):
             self._conversation_done = True
             self.input_field.setPlaceholderText("Press Enter to close")
@@ -412,7 +412,7 @@ class ChatWindow(QMainWindow):
                 self._dismiss()
             return
 
-        # If still waiting for buddy's first message, queue the user's message
+        # If still waiting for zerei's first message, queue the user's message
         if self._awaiting_initial:
             self._queued_message = text
             self.input_field.clear()
@@ -428,7 +428,7 @@ class ChatWindow(QMainWindow):
             QTimer.singleShot(500, self._dismiss)
             return
 
-        # User typed something — conversation continues even if buddy signaled closing
+        # User typed something — conversation continues even if zerei signaled closing
         self._conversation_done = False
         self.input_field.setPlaceholderText("Type here...")
         if hasattr(self, '_auto_close_timer') and self._auto_close_timer is not None:
@@ -450,14 +450,14 @@ class ChatWindow(QMainWindow):
 
     def _handle_reply(self, reply: str, signal: str):
         self._remove_typing_indicator()
-        self.show_buddy_message(reply)
+        self.show_zerei_message(reply)
         if signal in (SIGNAL_CLOSING, SIGNAL_MINIMIZE):
             self._conversation_done = True
             self.input_field.setPlaceholderText("Press Enter to close")
             self.input_field.setFocus()
             # Don't auto-close onboarding — let user close manually
             if self._current_trigger != "onboarding":
-                # Auto-close after 3s — user already engaged, buddy is wrapping up
+                # Auto-close after 3s — user already engaged, zerei is wrapping up
                 QTimer.singleShot(3000, self._auto_close_if_done)
 
     def _handle_show_trigger(self, trigger: str):

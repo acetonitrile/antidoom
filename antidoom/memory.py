@@ -58,10 +58,10 @@ class Memory:
     def has_profile(self) -> bool:
         return (self.data_dir / "profile.json").exists()
 
-    # --- Buddy memories (learnings from conversations) ---
+    # --- Zerei memories (learnings from conversations) ---
 
     def get_memories(self) -> list[dict]:
-        """Load buddy memory notes."""
+        """Load zerei memory notes."""
         path = self.data_dir / "memories.json"
         if not path.exists():
             return []

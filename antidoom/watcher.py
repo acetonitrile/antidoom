@@ -52,8 +52,8 @@ class WatcherState:
         """How many minutes of doom scrolling in the last N minutes."""
         snaps = self.recent(window_minutes)
         doom_count = sum(1 for s in snaps if s.activity == Activity.DOOM_SCROLLING)
-        # Each snapshot represents ~30s
-        return doom_count * 0.5
+        # Each snapshot represents ~15s
+        return doom_count * 0.25
 
     def consecutive_doom_count(self) -> int:
         """How many consecutive recent snapshots are doom scrolling."""
@@ -98,19 +98,19 @@ class WatcherState:
 
 
 CLASSIFICATION_PROMPT_BASE = """\
-You are classifying a user's computer screenshot for a productivity buddy app.
+You are classifying a user's computer screenshot for Zerei, a productivity companion app.
 
 Your job is to judge whether the user is doing REAL WORK or not. Be skeptical. If something doesn't look like it's clearly contributing to their work, it's probably not.
 
 Classify the activity into exactly one category:
 - "productive": Actively doing work — coding in an IDE, writing docs, spreadsheets, work communication. The activity must be DIRECTLY and OBVIOUSLY related to their current project. Do not assume a technical topic is work-related just because the user is a developer — it must be specifically relevant to what they're building.
-- "doom_scrolling": ANY leisure, entertainment, or distraction browsing. This includes social media, news feeds, YouTube, Reddit, torrent sites, shopping, forums, games, or anything else that is clearly not work. If it's not productive and it's not genuinely ambiguous, it's doom_scrolling.
-- "ambiguous": The activity COULD be work-related but you're not confident. Use this for: reading articles or wikis on topics that are tangentially technical but not clearly part of their project, communication tools that could be work or personal (Slack, email, Discord), or anything where you'd want to ask the user "is this for work?" before judging.
+- "doom_scrolling": ANY leisure, entertainment, or distraction browsing. This includes social media, news feeds, YouTube, Reddit, torrent sites, shopping, forums, games, or anything else that is clearly not work. Communication apps (Discord, Slack, email) are doom_scrolling if the TOPIC of conversation has no connection to the user's current projects/goals. READ the actual content on screen and judge by topic, not by app name.
+- "ambiguous": ONLY use this when you genuinely cannot tell — the topic is plausibly related to their work but you're not sure. Do NOT use this as a safe default. If you can read the content and it's not about their projects, it's doom_scrolling.
 """
 
 CLASSIFICATION_PROMPT_SUFFIX = """
 Respond with JSON only, no markdown:
-{"activity": "<category>", "description": "<specific content visible on screen — include thread titles, subreddit/channel names, article headlines, tab names, or code context. Be concrete, not generic. 30 words max.>", "app_name": "<best guess at app name>"}
+{"activity": "<category>", "description": "<READ THE SCREEN. If the content is generic/unremarkable (scrolling a feed, browsing thumbnails), keep it short — 10-15 words. But if there's something specific and interesting (an article they're reading, a conversation topic, specific code they're debugging, a video topic, a thread they're deep in), describe it in detail — quote headlines, thread titles, tweet content, code context. Up to 80 words when the content is worth capturing.>", "app_name": "<best guess at app name>"}
 """
 
 
@@ -133,12 +133,18 @@ def build_classification_prompt(profile: dict | None = None) -> str:
 
 
 def capture_screenshot() -> bytes:
-    """Capture screenshot using macOS screencapture. Returns PNG bytes."""
+    """Capture screenshot using macOS screencapture. Returns resized PNG bytes (<5MB)."""
     with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
         tmp_path = f.name
     log.debug("Capturing screenshot to %s", tmp_path)
     subprocess.run(
         ["screencapture", "-x", "-C", tmp_path],
+        check=True,
+        capture_output=True,
+    )
+    # Resize to max 1920px wide — keeps text readable, stays well under 5MB
+    subprocess.run(
+        ["sips", "--resampleWidth", "1920", tmp_path],
         check=True,
         capture_output=True,
     )
@@ -156,7 +162,7 @@ def classify_screenshot(client: anthropic.Anthropic, png_bytes: bytes, profile: 
 
     response = client.messages.create(
         model=VISION_MODEL,
-        max_tokens=200,
+        max_tokens=400,
         messages=[
             {
                 "role": "user",
@@ -197,13 +203,14 @@ class Watcher:
     def __init__(self, interval_seconds: int = 30, snapshots_log: Path | None = None, memory=None):
         self.interval = interval_seconds
         self.state = WatcherState()
-        self.client = anthropic.Anthropic()
+        self.client = anthropic.Anthropic(timeout=60.0)
         self._memory = memory  # Memory instance for profile-aware classification
         self._running = False
         self._thread: threading.Thread | None = None
         self._on_snapshot_callbacks: list = []
         # File where every snapshot classification is appended
-        self._snapshots_log = snapshots_log or (Path.home() / ".antidoom" / "snapshots.log")
+        from .memory import DATA_DIR
+        self._snapshots_log = snapshots_log or (DATA_DIR / "snapshots.log")
         self._snapshots_log.parent.mkdir(parents=True, exist_ok=True)
 
     def on_snapshot(self, callback):
@@ -233,6 +240,7 @@ class Watcher:
     def _loop(self):
         log.debug("Watcher loop started")
         while self._running:
+            cycle_start = time.time()
             try:
                 png = capture_screenshot()
                 profile = self._memory.get_profile() if self._memory else None
@@ -252,5 +260,8 @@ class Watcher:
                         log.error("Watcher callback %d error: %s", i, cb_err, exc_info=True)
             except Exception as e:
                 log.error("Watcher error: %s", e, exc_info=True)
-            log.debug("Watcher sleeping %ds", self.interval)
-            time.sleep(self.interval)
+            # Sleep for remaining interval time (subtract API call duration)
+            elapsed = time.time() - cycle_start
+            remaining = max(1, self.interval - elapsed)
+            log.debug("Watcher cycle took %.1fs, sleeping %.1fs", elapsed, remaining)
+            time.sleep(remaining)

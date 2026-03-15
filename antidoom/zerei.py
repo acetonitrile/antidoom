@@ -1,8 +1,9 @@
-"""Buddy conversation engine — Claude-powered cowork buddy."""
+"""Zerei conversation engine — Claude-powered conversational companion."""
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, date
+from pathlib import Path
 
 import anthropic
 
@@ -13,7 +14,7 @@ from .watcher import WatcherState, Activity
 
 MODEL = "claude-sonnet-4-6"
 
-# Signal returned alongside each buddy message to control window behavior
+# Signal returned alongside each zerei message to control window behavior
 SIGNAL_KEEP_OPEN = "keep_open"
 SIGNAL_CLOSING = "closing"
 SIGNAL_MINIMIZE = "minimize"
@@ -84,14 +85,15 @@ signals:
 
 **reflection**: this is your deepest mode. the user chose to reflect — this is where the real work happens. you are a diary that talks back, a mirror that asks questions.
 
-open with something grounded in what you actually know — their recent activity, their goals, their state. not a generic "how are you doing?"
+if you have a journal entry in your context (labeled "Your journal entry about their day"), share it with the user. present it naturally — "here's what i saw today:" then the journal. the journal is YOUR voice, written by you — don't introduce it as someone else's writing. after sharing it, invite them to react. "anything feel off? anything i missed?"
 
-threads to pull on (pick what feels right, don't run through a checklist):
+if there's no journal, open with something grounded in what you actually know — their recent activity, goals, state.
+
+after sharing the journal, the conversation can go anywhere:
+- **react and discuss**: let them respond to the journal. they might push back, add context, or just sit with it.
 - **patterns**: "i've noticed you keep ending up on X around [time]. what's pulling you there?" connect dots across sessions.
 - **goals vs reality**: "you said you wanted to [goal]. how's that actually going?" be honest about the gap if there is one.
-- **long-term thinking**: "zoom out for a sec — where are you trying to get to? not today, but bigger picture." help them connect daily grind to what actually matters to them.
 - **what's working**: "what's been working for you lately?" not everything has to be about problems.
-- **ambiguous activities**: if you see activities in the context that were hard to classify, ask about them naturally. "i saw you on Discord earlier — was that work or were you just hanging out?" use their answer to understand them better.
 - **life stuff**: they might want to talk about things beyond work. that's fine. this is their space.
 
 don't rush this. let them talk. stay keep_open until it feels complete. longer exchanges are encouraged — this is the mode where 5-10 back-and-forths is normal.
@@ -151,21 +153,23 @@ Previous goals (may be outdated):
 Conversation:
 {transcript}
 
-Based on this conversation, what are the user's current goals? Include:
-- Any goals they confirmed they're still working on
-- Any NEW goals or intentions they mentioned
-- Remove any goals they said are done or no longer relevant
+RULES — be aggressive about keeping this list clean and current:
+1. REMOVE goals the user completed, abandoned, or said are no longer relevant. Don't hoard old goals.
+2. If the user said they're SWITCHING focus (e.g. "I should do taxes now" or "I'm done with X, moving to Y"), remove the old focus and add the new one.
+3. ORDER goals by priority — the thing they should be doing RIGHT NOW goes first.
+4. Keep each goal short and actionable. Max 5 goals — if more, merge or drop the least important.
+5. If the user stated ANY new intention, add it. Even vague ones count.
+6. If the user didn't state any clear goals, return the previous goals unchanged.
 
-Return a JSON array of short goal strings. Each goal should be concrete and actionable.
-Example: ["Finish hackathon demo", "Figure out transportation to San Jose", "Edit resume"]
+Return a JSON array of short goal strings, ordered by priority (most urgent first).
+Example: ["Do taxes — check Trello checklist for missing docs", "Update resume", "Job search"]
 
-If the user didn't state any clear goals, return the previous goals unchanged.
 Respond with JSON only, no markdown.
 """
 
 
 MEMORY_EXTRACTION_PROMPT = """\
-You just finished a conversation with a user (your cowork buddy). Extract anything worth remembering for future conversations.
+You just finished a conversation with a user. Extract anything worth remembering for future conversations.
 
 IMPORTANT: The current date/time is {current_datetime}. Always use absolute dates in memories, never relative terms like "tomorrow", "yesterday", "later today", "in 12 hours". For example, write "hackathon demo on 2026-03-15" not "hackathon demo tomorrow".
 
@@ -195,9 +199,10 @@ Respond with JSON only, no markdown:
   "profile_updates": {{"field": "new value"}} or null
 }}
 
-GOALS is a required field. It must be the FULL updated goals list — existing goals from the profile + any new intentions/plans from this conversation, minus anything completed.
-- If the user stated ANY intention, plan, or goal — add it. Even vague ones count ("need to figure out transportation" → "Figure out BART/Uber to San Jose for hackathon on 2026-03-15")
-- If they completed or dropped a goal — remove it.
+GOALS is a required field. Return the FULL updated goals list, ordered by priority (most urgent first). Max 5 goals.
+- REMOVE completed, abandoned, or deprioritized goals aggressively. Don't hoard old goals.
+- If the user said they're SWITCHING focus ("I should do taxes now", "done tinkering, moving to X"), remove the old focus and replace it.
+- Add any new intentions, even vague ones ("need to figure out transportation" → "Figure out BART/Uber to San Jose for hackathon on 2026-03-15")
 - If nothing changed, return the existing goals list unchanged.
 
 If there's nothing worth remembering and no goal changes, respond with:
@@ -206,7 +211,7 @@ If there's nothing worth remembering and no goal changes, respond with:
 
 
 MEMORY_COMPACTION_PROMPT = """\
-You are managing a memory store for a cowork buddy app. The memories below were extracted from conversations with a user over time. Many are redundant or overlap.
+You are managing a memory store for Zerei, a conversational companion app. The memories below were extracted from conversations with a user over time. Many are redundant or overlap.
 
 Compact these {count} memories down to at most {target} entries by:
 - Merging entries about the same topic/event into one richer entry
@@ -236,12 +241,129 @@ Each memory should be a single, information-dense sentence. For profile_updates,
 """
 
 
+def _parse_today_snapshots(snapshots_log: Path) -> str | None:
+    """Parse today's snapshots into a condensed timeline string for LLM consumption.
+
+    Only deduplicates truly identical consecutive snapshots (same app + same description).
+    Different content on the same app gets its own entry to preserve detail.
+    """
+    if not snapshots_log.exists():
+        return None
+
+    today = date.today().isoformat()
+    entries = []
+    for line in snapshots_log.read_text().splitlines():
+        if not line.strip() or not line.startswith(today):
+            continue
+        parts = [p.strip() for p in line.split("|", 3)]
+        if len(parts) >= 4:
+            timestamp, activity, app, desc = parts
+            time_str = timestamp.split("T")[1][:5]  # HH:MM
+            entries.append((time_str, activity, app, desc))
+
+    if not entries:
+        return None
+
+    # Only collapse truly identical consecutive snapshots (same app AND description)
+    blocks = []
+    prev_app = None
+    prev_desc = None
+    block_start = None
+    block_end = None
+    block_activity = None
+
+    for time_str, activity, app, desc in entries:
+        if app == prev_app and desc == prev_desc:
+            # Same thing — just extend the time range
+            block_end = time_str
+        else:
+            if prev_app is not None:
+                duration = block_start if block_end == block_start else f"{block_start}-{block_end}"
+                blocks.append(f"{duration} | {block_activity} | {prev_app}: {prev_desc}")
+            prev_app = app
+            prev_desc = desc
+            block_start = time_str
+            block_end = time_str
+            block_activity = activity
+    if prev_app is not None:
+        duration = block_start if block_end == block_start else f"{block_start}-{block_end}"
+        blocks.append(f"{duration} | {block_activity} | {prev_app}: {prev_desc}")
+
+    return "\n".join(blocks)
+
+
+DAILY_JOURNAL_PROMPT = """\
+You are writing a short personal journal entry for someone based on what you observed them doing today. You watched their screen all day. Write like a curious, perceptive friend — not a productivity dashboard.
+
+Their profile:
+{profile}
+
+Their goals:
+{goals}
+
+Memories from recent conversations:
+{memories}
+
+Raw activity timeline (from screenshots):
+{timeline}
+
+Write a 3-5 paragraph journal entry about their day. Be specific — reference actual apps, sites, and activities you saw. Be honest but not judgmental.
+
+Tone: warm, observational, a little curious. Like you're telling them what you noticed. Not a report — a reflection.
+
+Things to notice and mention:
+- How the day actually unfolded vs what they said they wanted to do
+- Interesting patterns or transitions (what pulled them away? what pulled them back?)
+- Moments of focus and moments of drift
+- Anything surprising or worth asking about
+- End with 1-2 genuine questions — things you're curious about after watching their day
+
+Keep it conversational. Lowercase is fine. No headers or bullet points — flowing prose.
+"""
+
+
+def generate_daily_journal(client, snapshots_log: Path, memory: 'Memory') -> str | None:
+    """Generate a narrative journal entry from today's activity. Returns the journal text or None."""
+    timeline = _parse_today_snapshots(snapshots_log)
+    if not timeline:
+        return None
+
+    profile = memory.get_profile() or {}
+    goals = profile.get("goals", [])
+    goals_str = "\n".join(f"- {g}" for g in goals) if goals else "(no goals set)"
+    profile_str = json.dumps(profile, indent=2)
+
+    memories = memory.get_memories()
+    memories_str = "\n".join(f"- {m['text']}" for m in memories[-15:]) if memories else "(no memories yet)"
+
+    prompt = DAILY_JOURNAL_PROMPT.format(
+        profile=profile_str,
+        goals=goals_str,
+        memories=memories_str,
+        timeline=timeline,
+    )
+
+    try:
+        resp = client.messages.create(
+            model=MODEL,
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        journal = resp.content[0].text.strip()
+        log.info("Daily journal generated (%d chars)", len(journal))
+        return journal
+    except Exception as e:
+        log.error("Failed to generate daily journal: %s", e)
+        return None
+
+
 def _build_context(
     memory: Memory,
     watcher_state: WatcherState | None,
     trigger: str,
+    daily_journal: str | None = None,
 ) -> str:
-    """Build context string for the buddy from current state."""
+    """Build context string for Zerei from current state."""
     parts = []
 
     # User profile
@@ -270,8 +392,9 @@ def _build_context(
     if not profile or not profile.get("goals"):
         parts.append("No goals set yet.")
 
-    # Current activity
-    if watcher_state and watcher_state.history:
+    # Current activity — skip for goal_setting since the snapshot may be stale
+    # (goal_setting fires on first snapshot, before user settles into their actual task)
+    if trigger != "goal_setting" and watcher_state and watcher_state.history:
         latest = watcher_state.history[-1]
         parts.append(f"Current activity: {latest.description} ({latest.app_name}) — classified as {latest.activity.value}")
 
@@ -281,26 +404,30 @@ def _build_context(
 
         consec_doom = watcher_state.consecutive_doom_count()
         if consec_doom > 0:
-            parts.append(f"Consecutive doom scroll snapshots: {consec_doom} (~{consec_doom * 0.5:.0f} min)")
+            parts.append(f"Consecutive doom scroll snapshots: {consec_doom} (~{consec_doom * 0.25:.0f} min)")
 
         consec_prod = watcher_state.consecutive_productive_count()
-        if consec_prod > 4:  # >2 min
-            parts.append(f"Been productive for ~{consec_prod * 0.5:.0f} min straight")
+        if consec_prod > 8:  # >2 min
+            parts.append(f"Been productive for ~{consec_prod * 0.25:.0f} min straight")
 
-    # Buddy memories (learnings from past conversations)
+    # Zerei memories (learnings from past conversations)
     memories = memory.get_memories()
     if memories:
         parts.append("Things you remember about this user:")
         for m in memories:
             parts.append(f"  - {m['text']}")
 
-    # For reflection mode: surface ambiguous activities for clarification
-    if trigger == "reflection" and watcher_state:
-        ambiguous = watcher_state.recent_ambiguous()
-        if ambiguous:
-            parts.append("Activities you weren't sure about (ask the user to clarify):")
-            for s in ambiguous:
-                parts.append(f"  - {s.app_name}: {s.description}")
+    # For reflection mode: surface ambiguous activities and daily journal
+    if trigger == "reflection":
+        if watcher_state:
+            ambiguous = watcher_state.recent_ambiguous()
+            if ambiguous:
+                parts.append("Activities you weren't sure about (ask the user to clarify):")
+                for s in ambiguous:
+                    parts.append(f"  - {s.app_name}: {s.description}")
+
+        if daily_journal:
+            parts.append(f"Your journal entry about their day (share this with them, then discuss):\n{daily_journal}")
 
     parts.append(f"Conversation trigger: {trigger}")
     parts.append(f"Current time: {datetime.now().strftime('%I:%M %p, %A')}")
@@ -309,7 +436,7 @@ def _build_context(
 
 
 def parse_signal(text: str) -> tuple[str, str]:
-    """Extract signal from buddy message. Returns (clean_message, signal)."""
+    """Extract signal from zerei message. Returns (clean_message, signal)."""
     signal = SIGNAL_KEEP_OPEN
     clean = text
 
@@ -328,23 +455,31 @@ def parse_signal(text: str) -> tuple[str, str]:
     return clean, signal
 
 
-class Buddy:
-    """Manages conversations with the cowork buddy."""
+class Zerei:
+    """Manages conversations with Zerei."""
 
-    def __init__(self, memory: Memory, watcher_state: WatcherState | None = None):
+    def __init__(self, memory: Memory, watcher_state: WatcherState | None = None,
+                 snapshots_log: Path | None = None):
         self.memory = memory
         self.watcher_state = watcher_state
-        self.client = anthropic.Anthropic()
+        self.snapshots_log = snapshots_log
+        self.client = anthropic.Anthropic(timeout=60.0)
         self.current_convo: Conversation | None = None
 
     def start_conversation(self, trigger: str) -> tuple[str, str]:
-        """Start a new conversation. Returns (buddy_message, signal)."""
+        """Start a new conversation. Returns (zerei_message, signal)."""
         convo_id = datetime.now().strftime("%Y%m%d_%H%M%S") + f"_{trigger}"
         self.current_convo = Conversation(id=convo_id, trigger=trigger)
         log.info("Starting conversation: %s (trigger=%s)", convo_id, trigger)
 
-        context = _build_context(self.memory, self.watcher_state, trigger)
-        log.debug("Buddy context:\n%s", context)
+        # Generate daily journal for reflection mode
+        self._daily_journal = None
+        if trigger == "reflection" and self.snapshots_log:
+            log.info("Generating daily journal for reflection...")
+            self._daily_journal = generate_daily_journal(self.client, self.snapshots_log, self.memory)
+
+        context = _build_context(self.memory, self.watcher_state, trigger, daily_journal=self._daily_journal)
+        log.debug("Zerei context:\n%s", context)
 
         response = self.client.messages.create(
             model=MODEL,
@@ -356,9 +491,9 @@ class Buddy:
         )
 
         raw = response.content[0].text
-        log.debug("Buddy raw response: %s", raw)
+        log.debug("Zerei raw response: %s", raw)
         message, signal = parse_signal(raw)
-        log.info("Buddy message (signal=%s): %s", signal, message[:80])
+        log.info("Zerei message (signal=%s): %s", signal, message[:80])
 
         self.current_convo.messages.append(Message(role="assistant", content=message))
         self.memory.save_conversation(self.current_convo)
@@ -366,7 +501,7 @@ class Buddy:
         return message, signal
 
     def reply(self, user_message: str) -> tuple[str, str]:
-        """User replies to the buddy. Returns (buddy_message, signal)."""
+        """User replies to Zerei. Returns (zerei_message, signal)."""
         log.info("User reply: %s", user_message[:80])
         if not self.current_convo:
             return self.start_conversation("user_initiated")
@@ -374,7 +509,8 @@ class Buddy:
         self.current_convo.messages.append(Message(role="user", content=user_message))
 
         # Build message history for Claude
-        context = _build_context(self.memory, self.watcher_state, self.current_convo.trigger)
+        context = _build_context(self.memory, self.watcher_state, self.current_convo.trigger,
+                                 daily_journal=getattr(self, '_daily_journal', None))
         messages = [{"role": "user", "content": f"[CONTEXT]\n{context}\n\n[START CONVERSATION]\nOpen the conversation based on the trigger type."}]
 
         for msg in self.current_convo.messages:
@@ -401,7 +537,7 @@ class Buddy:
         return not self.memory.has_profile()
 
     def start_onboarding(self) -> tuple[str, str]:
-        """Start the onboarding conversation. Returns (buddy_message, signal)."""
+        """Start the onboarding conversation. Returns (zerei_message, signal)."""
         convo_id = datetime.now().strftime("%Y%m%d_%H%M%S") + "_onboarding"
         self.current_convo = Conversation(id=convo_id, trigger="onboarding")
         log.info("Starting onboarding conversation: %s", convo_id)
@@ -425,7 +561,7 @@ class Buddy:
         return message, signal
 
     def reply_onboarding(self, user_message: str) -> tuple[str, str]:
-        """Handle a reply during onboarding. Returns (buddy_message, signal)."""
+        """Handle a reply during onboarding. Returns (zerei_message, signal)."""
         log.info("Onboarding reply: %s", user_message[:80])
         if not self.current_convo:
             return self.start_onboarding()
@@ -464,7 +600,7 @@ class Buddy:
             return
         log.info("Extracting profile from onboarding conversation")
         transcript = "\n".join(
-            f"{'buddy' if m.role == 'assistant' else 'user'}: {m.content}"
+            f"{'zerei' if m.role == 'assistant' else 'user'}: {m.content}"
             for m in self.current_convo.messages
         )
         try:
@@ -499,20 +635,27 @@ class Buddy:
 
     def extract_memories(self):
         """Extract memories from the just-finished conversation. Call after conversation ends."""
-        convo = self.current_convo
-        self.extract_memories_from(convo)
-        # For goal_setting conversations, run a dedicated goal extraction
-        if convo and convo.trigger == "goal_setting" and len(convo.messages) >= 2:
-            self._extract_goals(convo)
+        try:
+            convo = self.current_convo
+            log.info("extract_memories called (convo=%s, messages=%d)",
+                     convo.trigger if convo else None,
+                     len(convo.messages) if convo else 0)
+            self.extract_memories_from(convo)
+            # For goal_setting conversations, run a dedicated goal extraction
+            if convo and convo.trigger == "goal_setting" and len(convo.messages) >= 2:
+                self._extract_goals(convo)
+        except Exception as e:
+            log.error("extract_memories crashed: %s", e, exc_info=True)
 
     def extract_memories_from(self, convo: 'Conversation | None'):
         """Extract memories from a specific conversation. Thread-safe — doesn't read self.current_convo."""
         if not convo or len(convo.messages) < 2:
-            log.debug("Skipping memory extraction — conversation too short")
+            log.info("Skipping memory extraction — conversation too short (%d messages)",
+                     len(convo.messages) if convo else 0)
             return
 
         transcript = "\n".join(
-            f"{'buddy' if m.role == 'assistant' else 'user'}: {m.content}"
+            f"{'zerei' if m.role == 'assistant' else 'user'}: {m.content}"
             for m in convo.messages
         )
 
@@ -531,6 +674,8 @@ class Buddy:
         )
 
         try:
+            log.info("Starting memory extraction API call for %s conversation (%d messages)",
+                     convo.trigger, len(convo.messages))
             resp = self.client.messages.create(
                 model=MODEL,
                 max_tokens=1000,
@@ -539,7 +684,7 @@ class Buddy:
                 ],
             )
             raw_text = resp.content[0].text.strip()
-            log.debug("Memory extraction raw: %s", raw_text)
+            log.info("Memory extraction raw: %s", raw_text[:200])
 
             # Strip markdown code fences if present
             if raw_text.startswith("```"):
@@ -577,7 +722,7 @@ class Buddy:
     def _extract_goals(self, convo: 'Conversation'):
         """Dedicated goal extraction for goal_setting conversations."""
         transcript = "\n".join(
-            f"{'buddy' if m.role == 'assistant' else 'user'}: {m.content}"
+            f"{'zerei' if m.role == 'assistant' else 'user'}: {m.content}"
             for m in convo.messages
         )
         profile = self.memory.get_profile() or {}

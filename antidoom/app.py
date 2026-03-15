@@ -10,7 +10,7 @@ from PyQt6.QtGui import QAction, QIcon, QPixmap, QPainter, QColor, QFont
 from PyQt6.QtCore import QTimer, Qt
 
 from .watcher import Watcher, Activity
-from .buddy import Buddy, SIGNAL_CLOSING, SIGNAL_MINIMIZE
+from .zerei import Zerei, SIGNAL_CLOSING, SIGNAL_MINIMIZE
 from .memory import Memory
 from .triggers import TriggerEngine, TriggerConfig
 from .chat_window import ChatWindow
@@ -102,11 +102,12 @@ class AntidoomApp:
                 absence_threshold=120,    # 2 min (vs 4 hours)
             )
         else:
-            watcher_interval = 30
+            watcher_interval = 15
             trigger_config = TriggerConfig()
 
         self.watcher = Watcher(interval_seconds=watcher_interval, memory=self.memory)
-        self.buddy = Buddy(memory=self.memory, watcher_state=self.watcher.state)
+        self.zerei = Zerei(memory=self.memory, watcher_state=self.watcher.state,
+                           snapshots_log=self.watcher._snapshots_log)
         self.triggers = TriggerEngine(config=trigger_config)
         self._onboarding = False  # True while onboarding conversation is active
         self._conversation_active = False  # True while any conversation window is open
@@ -146,7 +147,7 @@ class AntidoomApp:
         full = f"\U0001f441 {snapshot.app_name} \u2014 {snapshot.description} {emoji}"
         # Both updates must happen on Qt main thread — use signal for label,
         # and pack tray tooltip into the same signal handler
-        self._pending_tray_tooltip = f"Antidoom Buddy\n{full}"
+        self._pending_tray_tooltip = f"Zerei\n{full}"
         self.window.signal_bridge.update_activity.emit(short)
 
     def _update_tray_tooltip(self, _text: str):
@@ -166,7 +167,7 @@ class AntidoomApp:
         open_action.triggered.connect(lambda: self._open_from_tray("user_initiated"))
         menu.addAction(open_action)
 
-        reflect_action = QAction("Reflect", self.qt_app)
+        reflect_action = QAction("Review My Day", self.qt_app)
         reflect_action.triggered.connect(lambda: self._open_from_tray("reflection"))
         menu.addAction(reflect_action)
 
@@ -208,17 +209,17 @@ class AntidoomApp:
     def _cleanup_stale_conversation(self):
         """Clean up a stale conversation before preempting with a new one."""
         self.triggers.reset_cooldown()
-        if not self._user_engaged and self.buddy.current_convo and self.buddy.current_convo.trigger in (
+        if not self._user_engaged and self.zerei.current_convo and self.zerei.current_convo.trigger in (
             "nudge", "extended_nudge", "we_need_to_talk",
         ):
-            self.triggers.dismiss_nudge(self.buddy.current_convo.trigger)
+            self.triggers.dismiss_nudge(self.zerei.current_convo.trigger)
         # Snapshot the convo before start_conversation overwrites it
-        stale_convo = self.buddy.current_convo
+        stale_convo = self.zerei.current_convo
         import threading
-        threading.Thread(target=self.buddy.extract_memories_from, args=(stale_convo,), daemon=True).start()
+        threading.Thread(target=self.zerei.extract_memories_from, args=(stale_convo,), daemon=True).start()
 
     def _open_from_tray(self, trigger: str):
-        """Open buddy from tray menu — show typing immediately, API call in background."""
+        """Open Zerei from tray menu — show typing immediately, API call in background."""
         if self._conversation_active:
             return
         self._conversation_active = True
@@ -228,7 +229,7 @@ class AntidoomApp:
         threading.Thread(target=self._handle_trigger, args=(trigger,), daemon=True).start()
 
     def _handle_trigger(self, trigger: str):
-        """Start a buddy conversation for the given trigger.
+        """Start a Zerei conversation for the given trigger.
 
         When called from _handle_show_trigger, the window is already visible with
         typing indicator. We just need to get the message and deliver it.
@@ -236,7 +237,7 @@ class AntidoomApp:
         log.info("Handling trigger: %s", trigger)
         self._conversation_active = True
         self._user_engaged = False
-        message, sig = self.buddy.start_conversation(trigger)
+        message, sig = self.zerei.start_conversation(trigger)
         log.info("Conversation started, showing message (signal=%s)", sig)
 
         # Emit signal to show conversation on main Qt thread
@@ -252,12 +253,12 @@ class AntidoomApp:
             # Direct open (e.g. tray menu click, onboarding) — show popup normally
             self._conversation_active = True
             self._user_engaged = False
-            self.window.popup(buddy_message=message, trigger=trigger, signal=signal)
+            self.window.popup(zerei_message=message, trigger=trigger, signal=signal)
 
     def _handle_user_message(self, text: str) -> tuple[str, str]:
         """Called from chat window when user sends a message."""
         if self._onboarding:
-            message, sig = self.buddy.reply_onboarding(text)
+            message, sig = self.zerei.reply_onboarding(text)
             if sig == SIGNAL_CLOSING:
                 self._onboarding = False
                 log.info("Onboarding complete")
@@ -265,11 +266,11 @@ class AntidoomApp:
             return message, sig
         self._user_engaged = True
         # Only reset doom escalation for doom-related triggers
-        if self.buddy.current_convo and self.buddy.current_convo.trigger in (
+        if self.zerei.current_convo and self.zerei.current_convo.trigger in (
             "nudge", "extended_nudge", "we_need_to_talk",
         ):
             self.triggers.engaged()
-        return self.buddy.reply(text)
+        return self.zerei.reply(text)
 
     def _handle_dismissed(self):
         """User closed the window."""
@@ -280,22 +281,22 @@ class AntidoomApp:
             self._onboarding = False
             log.info("Onboarding dismissed")
             self._start_background_services()
-        elif not self._user_engaged and self.buddy.current_convo and self.buddy.current_convo.trigger in (
+        elif not self._user_engaged and self.zerei.current_convo and self.zerei.current_convo.trigger in (
             "nudge", "extended_nudge", "we_need_to_talk",
         ):
             # Only count as dismissed if user never replied
-            self.triggers.dismiss_nudge(self.buddy.current_convo.trigger)
+            self.triggers.dismiss_nudge(self.zerei.current_convo.trigger)
 
         # Extract memories from the conversation in background
         import threading
-        threading.Thread(target=self.buddy.extract_memories, daemon=True).start()
+        threading.Thread(target=self.zerei.extract_memories, daemon=True).start()
 
     def _start_onboarding(self):
         """Start or redo the onboarding conversation."""
         import threading
         def _do():
             self._onboarding = True
-            message, sig = self.buddy.start_onboarding()
+            message, sig = self.zerei.start_onboarding()
             self.window.signal_bridge.show_conversation.emit(message, sig, "onboarding")
         threading.Thread(target=_do, daemon=True).start()
 
@@ -325,13 +326,13 @@ class AntidoomApp:
 
     def run(self):
         # If no profile yet, start onboarding first — background services start after
-        if self.buddy.needs_onboarding():
+        if self.zerei.needs_onboarding():
             log.info("No profile found — starting onboarding (watcher paused until complete)")
             QTimer.singleShot(500, self._start_onboarding)
         else:
-            # Profile exists, start services immediately
-            # goal_setting will fire automatically on first snapshot (absence detection)
+            # Profile exists — show goal_setting immediately, don't wait for first snapshot
             self._start_background_services()
+            QTimer.singleShot(100, lambda: self._open_from_tray("goal_setting"))
 
         # Allow Ctrl+C to work
         signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -347,10 +348,10 @@ class AntidoomApp:
             log.info("Debug mode: will auto-quit in 15 minutes")
             QTimer.singleShot(debug_timeout_ms, self._debug_shutdown)
 
-        log.info("Antidoom Buddy is running. Check the menu bar.")
+        log.info("Zerei is running. Check the menu bar.")
         log.info("Right-click the tray icon to open manually or quit.")
-        log.info("Snapshots log: ~/.antidoom/snapshots.log")
-        log.info("Full log: ~/.antidoom/antidoom.log")
+        log.info("Snapshots log: %s", self.watcher._snapshots_log)
+        log.info("Full log: %s", LOG_DIR / "antidoom.log")
 
         sys.exit(self.qt_app.exec())
 

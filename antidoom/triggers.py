@@ -1,4 +1,4 @@
-"""Trigger logic — decides when the buddy should pop up and what kind of conversation to start."""
+"""Trigger logic — decides when Zerei should pop up and what kind of conversation to start."""
 
 import logging
 from datetime import datetime
@@ -11,20 +11,20 @@ log = logging.getLogger(__name__)
 
 @dataclass
 class TriggerConfig:
-    # Doom scroll thresholds (in consecutive snapshot counts, ~30s each)
-    doom_nudge_threshold: int = 4          # ~2 min
-    doom_extended_threshold: int = 10      # ~5 min
+    # Doom scroll thresholds (in consecutive snapshot counts, ~15s each)
+    doom_nudge_threshold: int = 8          # ~2 min
+    doom_extended_threshold: int = 20      # ~5 min
     doom_we_need_to_talk: float = 180.0    # 3 hours in a day (minutes)
 
     # Grind threshold
-    grind_threshold: int = 180             # ~90 min of consecutive productive
+    grind_threshold: int = 360             # ~90 min of consecutive productive
 
     # Nudge cooldown — exponential backoff: halved on each dismiss, min=nudge_cooldown_floor
-    nudge_cooldown: int = 300              # 5 min initial (→ 2.5min → 1.25min → floor)
-    nudge_cooldown_floor: int = 60         # 1 min minimum
+    nudge_cooldown: int = 120              # 2 min initial (→ 1min → 30s → floor)
+    nudge_cooldown_floor: int = 30         # 30s minimum
 
     # Ambiguous activity — ask user to clarify
-    ambiguous_threshold: int = 10          # ~5 min of consecutive ambiguous
+    ambiguous_threshold: int = 20          # ~5 min of consecutive ambiguous
 
     # Welcome back / goal check-in after absence
     absence_threshold: float = 4 * 3600    # 4 hours (seconds)
@@ -44,22 +44,17 @@ class TriggerEngine:
         self._welcome_back_fired: bool = False  # only fire once per absence
 
     def on_trigger(self, callback):
-        """Register callback(trigger_type: str) called when buddy should pop up."""
+        """Register callback(trigger_type: str) called when Zerei should pop up."""
         self._on_trigger_callback = callback
 
     def evaluate(self, snapshot: Snapshot, watcher_state: WatcherState):
         """Called after each new snapshot. Decides if a trigger should fire."""
         now = datetime.now().timestamp()
 
-        # Goal check-in — fires on first snapshot (app launch) and after long absence
+        # Goal check-in after long absence (app launch is handled directly by app.py)
         if self._last_snapshot_time == 0:
-            # First snapshot since app started — always check in
-            self._welcome_back_fired = True
             self._last_snapshot_time = now
-            log.info("TRIGGER FIRED: goal_setting (app launch)")
-            if self._on_trigger_callback:
-                self._on_trigger_callback("goal_setting")
-            return
+            return  # Skip first snapshot — goal_setting already fired from app startup
         gap = now - self._last_snapshot_time
         if gap >= self.config.absence_threshold and not self._welcome_back_fired:
             self._welcome_back_fired = True
