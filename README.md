@@ -6,6 +6,10 @@ It uses Claude's vision to read your screen every 15 seconds — not just which 
 
 Think of it as a coworker who's always there — not to judge, but to hold context. It remembers what you said you wanted to do last Tuesday, notices you keep ending up on Twitter at 2pm, and asks why. It's a rubber duck that talks back, holds your goals across sessions, and won't let you forget what you said mattered.
 
+## Demo
+
+[Watch the demo video](https://drive.google.com/file/d/1j-hdiUL0J9ylfKZ3ig0IdZQkVBS97Y8N/view?usp=drive_link)
+
 ## How it works
 
 1. **Screenshots every 15s** — Claude vision reads what's actually on screen (tweet topics, Reddit threads, code being written, article headlines) and classifies it against your stated goals
