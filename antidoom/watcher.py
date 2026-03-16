@@ -19,6 +19,18 @@ log = logging.getLogger(__name__)
 VISION_MODEL = "claude-sonnet-4-6"
 
 
+def get_idle_seconds() -> float:
+    """Get seconds since last user input (mouse/keyboard) via macOS CoreGraphics."""
+    try:
+        import Quartz
+        return Quartz.CGEventSourceSecondsSinceLastEventType(
+            Quartz.kCGEventSourceStateCombinedSessionState,
+            Quartz.kCGAnyInputEventType,
+        )
+    except Exception:
+        return 0.0
+
+
 class Activity(Enum):
     PRODUCTIVE = "productive"
     DOOM_SCROLLING = "doom_scrolling"
@@ -200,8 +212,10 @@ def classify_screenshot(client: anthropic.Anthropic, png_bytes: bytes, profile: 
 class Watcher:
     """Background thread that captures and classifies screenshots."""
 
-    def __init__(self, interval_seconds: int = 30, snapshots_log: Path | None = None, memory=None):
+    def __init__(self, interval_seconds: int = 30, snapshots_log: Path | None = None, memory=None, idle_threshold: float = 120.0):
         self.interval = interval_seconds
+        self.idle_threshold = idle_threshold
+        self._was_idle = False
         self.state = WatcherState()
         self.client = anthropic.Anthropic(timeout=60.0)
         self._memory = memory  # Memory instance for profile-aware classification
@@ -237,11 +251,30 @@ class Watcher:
         with open(self._snapshots_log, "a") as f:
             f.write(line)
 
+    def _append_idle_marker(self, marker: str):
+        line = f"{datetime.now().isoformat()} | {marker:<25} | {'system':<20} | User {'went idle' if marker == 'idle_start' else 'returned from idle'}\n"
+        with open(self._snapshots_log, "a") as f:
+            f.write(line)
+
     def _loop(self):
         log.debug("Watcher loop started")
         while self._running:
             cycle_start = time.time()
             try:
+                idle_secs = get_idle_seconds()
+                if idle_secs >= self.idle_threshold:
+                    if not self._was_idle:
+                        log.info("User idle (%.0fs) — pausing screenshots", idle_secs)
+                        self._append_idle_marker("idle_start")
+                        self._was_idle = True
+                    time.sleep(self.interval)
+                    continue
+
+                if self._was_idle:
+                    log.info("User returned after idle — resuming screenshots")
+                    self._append_idle_marker("idle_end")
+                    self._was_idle = False
+
                 png = capture_screenshot()
                 profile = self._memory.get_profile() if self._memory else None
                 snapshot = classify_screenshot(self.client, png, profile=profile)

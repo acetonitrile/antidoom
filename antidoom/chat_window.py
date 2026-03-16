@@ -41,6 +41,7 @@ class SignalBridge(QObject):
     show_reply = pyqtSignal(str, str)  # (reply_text, signal) — for inline reply display
     update_activity = pyqtSignal(str)  # activity status text
     preempt_conversation = pyqtSignal(str)  # trigger type — replaces stale window
+    refocus_window = pyqtSignal()  # bring window back to front
 
 
 class ChatWindow(QMainWindow):
@@ -53,6 +54,7 @@ class ChatWindow(QMainWindow):
         self.signal_bridge.show_reply.connect(self._handle_reply)
         self.signal_bridge.update_activity.connect(self._update_status_label)
         self.signal_bridge.preempt_conversation.connect(self._preempt_for_new_trigger)
+        self.signal_bridge.refocus_window.connect(self._refocus)
         self._pending_trigger: str | None = None
         self._conversation_done = False  # True when zerei signals closing/minimize
         self._current_theme = _THEME_BLUE
@@ -76,6 +78,13 @@ class ChatWindow(QMainWindow):
             | Qt.WindowType.FramelessWindowHint
         )
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        self._appkit_available = False
+        try:
+            import AppKit  # noqa: F401
+            self._appkit_available = True
+        except ImportError:
+            log.debug("AppKit not available — window won't follow across Spaces")
 
         # Central widget with rounded corners
         self.central = QWidget()
@@ -302,6 +311,7 @@ class ChatWindow(QMainWindow):
 
         self._center_on_screen()
         self.show()
+        self._make_visible_on_all_spaces()
         self.raise_()
         self.activateWindow()
         self.input_field.setFocus()
@@ -331,6 +341,7 @@ class ChatWindow(QMainWindow):
 
         self._center_on_screen()
         self.show()
+        self._make_visible_on_all_spaces()
         self.raise_()
         self.activateWindow()
         self.input_field.setFocus()
@@ -510,6 +521,63 @@ class ChatWindow(QMainWindow):
     def set_on_trigger(self, callback):
         """Set callback(trigger_type: str) called when a trigger wants to open the window."""
         self._on_trigger_callback = callback
+
+    def _make_visible_on_all_spaces(self):
+        """Set macOS window to appear on all Spaces/desktops, including over full-screen apps."""
+        if not self._appkit_available:
+            return
+        try:
+            from AppKit import (
+                NSApp,
+                NSWindowCollectionBehaviorCanJoinAllSpaces,
+                NSWindowCollectionBehaviorFullScreenAuxiliary,
+            )
+            for window in NSApp.windows():
+                if window.title() == "Zerei":
+                    window.setCollectionBehavior_(
+                        NSWindowCollectionBehaviorCanJoinAllSpaces
+                        | NSWindowCollectionBehaviorFullScreenAuxiliary
+                    )
+                    break
+        except Exception as e:
+            log.debug("Failed to set all-spaces behavior: %s", e)
+
+    def _refocus(self):
+        """Bring the window back to front without interrupting the conversation."""
+        if self.isVisible():
+            log.info("Refocusing window")
+            self._exit_fullscreen_app()
+            self.raise_()
+            self.activateWindow()
+            self.input_field.setFocus()
+
+    @staticmethod
+    def _exit_fullscreen_app():
+        """If the frontmost app is in macOS full-screen, exit it so our window can appear."""
+        try:
+            from AppKit import NSWorkspace
+            from ApplicationServices import (
+                AXUIElementCreateApplication,
+                AXUIElementCopyAttributeValue,
+                AXUIElementSetAttributeValue,
+            )
+            # Get the frontmost app's PID
+            front_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            pid = front_app.processIdentifier()
+            # Get the app's accessibility element
+            app_ref = AXUIElementCreateApplication(pid)
+            # Get the frontmost window
+            err, windows = AXUIElementCopyAttributeValue(app_ref, "AXWindows", None)
+            if err == 0 and windows and len(windows) > 0:
+                window = windows[0]
+                # Check if full-screen
+                err, is_fs = AXUIElementCopyAttributeValue(window, "AXFullScreen", None)
+                if err == 0 and is_fs:
+                    # Exit full-screen
+                    AXUIElementSetAttributeValue(window, "AXFullScreen", False)
+                    log.info("Exited full-screen app: %s", front_app.localizedName())
+        except Exception as e:
+            log.debug("Could not exit full-screen: %s", e)
 
     def _dismiss(self):
         log.info("Window dismissed by user")

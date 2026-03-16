@@ -91,6 +91,7 @@ class AntidoomApp:
         if debug:
             log.info("DEBUG MODE: compressed timings for testing")
             watcher_interval = 10        # 10s between screenshots (vs 30s)
+            idle_threshold = 30           # 30s idle threshold in debug
             trigger_config = TriggerConfig(
                 doom_nudge_threshold=2,   # 2 snapshots (~20s vs ~2min)
                 doom_extended_threshold=4, # 4 snapshots (~40s vs ~5min)
@@ -103,9 +104,10 @@ class AntidoomApp:
             )
         else:
             watcher_interval = 15
+            idle_threshold = 120          # 2 min idle threshold in production
             trigger_config = TriggerConfig()
 
-        self.watcher = Watcher(interval_seconds=watcher_interval, memory=self.memory)
+        self.watcher = Watcher(interval_seconds=watcher_interval, memory=self.memory, idle_threshold=idle_threshold)
         self.zerei = Zerei(memory=self.memory, watcher_state=self.watcher.state,
                            snapshots_log=self.watcher._snapshots_log)
         self.triggers = TriggerEngine(config=trigger_config)
@@ -192,9 +194,6 @@ class AntidoomApp:
 
     def _on_trigger_fired(self, trigger: str):
         """Called from trigger engine (background thread). Gates on active conversation."""
-        if self._onboarding:
-            log.info("Trigger %s suppressed — onboarding in progress", trigger)
-            return
         if self._conversation_active:
             if self.window._conversation_done:
                 # Stale window — preempt it with the new trigger
@@ -202,7 +201,9 @@ class AntidoomApp:
                 self._cleanup_stale_conversation()
                 self.window.signal_bridge.preempt_conversation.emit(trigger)
             else:
-                log.info("Trigger %s suppressed — conversation already active", trigger)
+                # Conversation is live — don't interrupt, just refocus the window
+                log.info("Trigger %s during active conversation — refocusing window", trigger)
+                self.window.signal_bridge.refocus_window.emit()
             return
         self.window.signal_bridge.show_window.emit(trigger)
 
@@ -324,7 +325,23 @@ class AntidoomApp:
             log.info("Starting background services (watcher)")
             self.watcher.start()
 
+    @staticmethod
+    def _request_accessibility():
+        """Trigger macOS accessibility permission prompt if not already granted."""
+        try:
+            from ApplicationServices import AXIsProcessTrustedWithOptions, kAXTrustedCheckOptionPrompt
+            trusted = AXIsProcessTrustedWithOptions({kAXTrustedCheckOptionPrompt: True})
+            if trusted:
+                log.info("Accessibility permission granted")
+            else:
+                log.info("Accessibility permission not yet granted — user prompted")
+        except Exception as e:
+            log.debug("Could not check accessibility: %s", e)
+
     def run(self):
+        # Request accessibility permission early — needed for exiting full-screen apps
+        self._request_accessibility()
+
         # If no profile yet, start onboarding first — background services start after
         if self.zerei.needs_onboarding():
             log.info("No profile found — starting onboarding (watcher paused until complete)")

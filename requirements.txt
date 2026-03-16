@@ -1,3 +1,6 @@
 anthropic>=0.42.0
 PyQt6>=6.6.0
 Pillow>=10.0.0
+pyobjc-framework-Cocoa>=10.0
+pyobjc-framework-Quartz>=10.0
+pyobjc-framework-ApplicationServices>=10.0
